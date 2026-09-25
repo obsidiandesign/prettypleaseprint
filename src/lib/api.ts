@@ -157,14 +157,13 @@ export async function jsonBody(request: Request): Promise<Record<string, unknown
  * A story, as the API describes it.
  *
  * The one thing worth saying about this function is what it does not do:
- * there is no spread of the database row anywhere in it. Every field is named,
- * so a column added to the schema tomorrow — a private note, a cost, a
- * supplier reference — does not appear on the wire because somebody forgot to
- * exclude it. `storageKey` is the standing example: it is the object's name in
- * the bucket and it has never been anybody's business but the server's.
- *
- * `file.url` is the download route, not a signed storage URL. The bytes are
- * proxied through the app on purpose — see `src/app/api/models/[id]/route.ts`.
+ * there is no spread of the database row anywhere in it. Every field is
+ * named, so a column added to the schema tomorrow — a private note, a cost,
+ * a supplier reference — does not appear on the wire because somebody forgot
+ * to exclude it. The Bambuddy handoff ids (`libraryFileId`, `pipelineRunId`,
+ * `slicedLibraryFileId`, `queueItemId`, `archiveId`) are the standing
+ * example now: they are sync plumbing, not this API's business — `status`
+ * and `errorMessage` are what a caller needs.
  */
 export function storyResource(story: StoryRow) {
   return {
@@ -175,17 +174,17 @@ export function storyResource(story: StoryRow) {
     flagged: story.flagged,
     flagReason: story.flagReason,
     quantity: story.quantity,
+    neededBy: story.neededBy?.toISOString() ?? null,
+    model: {
+      url: story.modelUrl,
+      resolvedTitle: story.resolvedTitle,
+      plateCount: story.plateCount,
+    },
     material: story.material,
     color: { name: story.colorName, hex: story.colorHex },
     tip: story.tip,
     note: story.note,
-    file: {
-      filename: story.filename,
-      size: story.fileSize,
-      mimeType: story.mimeType,
-      dims: story.dims,
-      url: `/api/models/${story.id}`,
-    },
+    errorMessage: story.errorMessage,
     uploader: {
       id: story.uploader.id,
       name: story.uploader.name,

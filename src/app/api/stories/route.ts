@@ -1,11 +1,14 @@
 import { z } from "zod";
 
-import { ok, storyResource, withActor } from "@/lib/api";
+import { jsonBody, ok, storyResource, withActor } from "@/lib/api";
 import {
+  CreateStorySchema,
   LIST_LIMIT_DEFAULT,
   LIST_LIMIT_MAX,
   StatusSchema,
   StoryProblem,
+  createStoryFromLink,
+  getStory,
   listStories,
 } from "@/lib/stories";
 
@@ -17,9 +20,6 @@ import {
  * sees everything. The filters below can only ever narrow that — there is no
  * combination of query parameters that widens it, because the scope is the
  * first term of the AND and nothing here can reach it.
- *
- * Creating one is `POST /api/upload`, not here: a request arrives with a
- * model attached, and multipart is what carries 50 MB of geometry.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -72,4 +72,20 @@ export const GET = withActor(async (request, actor) => {
     // Null on the last page. Feed it back as `?before=` for the next one.
     nextCursor,
   });
+});
+
+/**
+ * File a new request. A link, not a file — see `createStoryFromLink` for
+ * why `spoolId` is the only thing that names a color.
+ */
+export const POST = withActor(async (request, actor) => {
+  const body = await jsonBody(request);
+  const parsed = CreateStorySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new StoryProblem(400, `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid."}`);
+  }
+
+  const created = await createStoryFromLink(actor, parsed.data);
+  return ok({ story: storyResource(await getStory(actor, created.id)) }, 201);
 });

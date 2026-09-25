@@ -5,7 +5,6 @@ import { redirect } from "next/navigation";
 import { requireAdmin, requireUser } from "@/lib/authz";
 import {
   StoryProblem,
-  advanceStory as advance,
   clearFlag as clear,
   declineStory as decline,
   flagStory as flag,
@@ -68,14 +67,6 @@ async function run(
     if (error instanceof StoryProblem) back(formData.get("from"), { error: error.message });
     throw error;
   }
-}
-
-export async function advanceStory(formData: FormData): Promise<void> {
-  const admin = await requireAdmin();
-  await run(formData, async (id) => {
-    const done = await advance(admin, id);
-    return { toast: `“${done.title}” → ${done.to} · ${done.uploaderName} notified` };
-  });
 }
 
 export async function declineStory(formData: FormData): Promise<void> {

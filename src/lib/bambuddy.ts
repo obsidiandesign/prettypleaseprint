@@ -129,9 +129,9 @@ export type MakerWorldImportResponse = {
 
 export async function importMakerWorldModel(params: {
   model_id: number;
-  source_type: string;
+  /** Defaults to "makerworld" server-side if omitted. */
+  source_type?: string;
   profile_id?: number | null;
-  instance_id?: string | null;
 }): Promise<MakerWorldImportResponse> {
   return bambuddyFetch<MakerWorldImportResponse>("/api/v1/makerworld/import", {
     method: "POST",

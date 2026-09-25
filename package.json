@@ -31,7 +31,6 @@
     "verify:auth": "tsx scripts/verify-auth.ts",
     "probe:security": "tsx scripts/security-probe.ts",
     "verify:models": "tsx scripts/verify-models.ts",
-    "verify:upload": "tsx scripts/verify-upload.ts",
     "verify:passkey": "tsx scripts/verify-passkey.ts",
     "check:secrets": "tsx scripts/check-secrets.ts",
     "check:links": "tsx scripts/check-links.ts",
@@ -48,8 +47,6 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1116.0",
-    "@aws-sdk/s3-request-presigner": "^3.1116.0",
     "@better-auth/passkey": "1.7.1",
     "@prisma/client": "6.19.3",
     "better-auth": "1.7.1",

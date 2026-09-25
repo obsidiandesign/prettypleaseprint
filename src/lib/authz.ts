@@ -12,11 +12,11 @@ import { storyScope, type Actor } from "@/lib/scope";
 export {
   storyScope,
   storyRef,
-  FLOW,
+  ALL_STATUSES,
   BOARD,
   isTerminal,
-  nextStatus,
-  assertTransition,
+  deriveStatus,
+  assertDecline,
   AuthzError,
   // feature-request rules (the 'frr' track)
   featureScope,

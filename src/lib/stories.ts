@@ -14,6 +14,9 @@ import {
   storyScope,
   type Actor,
 } from "@/lib/scope";
+import { listSpools } from "@/lib/bambuddy";
+import { processIntake } from "@/lib/bambuddy-sync";
+import { QuantitySchema } from "@/lib/catalog";
 
 /**
  * Everything that can happen to a ticket, in one place.
@@ -87,6 +90,31 @@ export const BodySchema = z
   .trim()
   .min(1, "Say something first.")
   .max(2000, "That is longer than a comment wants to be.");
+
+/**
+ * A new request: a link, not a file. `spoolId` is the only way color and
+ * material reach the row — see `createStoryFromLink`, which looks the spool
+ * up in live Bambuddy inventory rather than trusting a client-supplied name
+ * and color together.
+ */
+export const CreateStorySchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1, "Give it a title.")
+    .max(120, "Keep the title under 120 characters."),
+  modelUrl: z
+    .string()
+    .trim()
+    .min(1, "Paste a model link.")
+    .max(2000, "That link is too long."),
+  spoolId: z.coerce.number().int().positive("Pick a color."),
+  quantity: QuantitySchema,
+  note: z.string().trim().max(2000, "That note is very long.").optional().default(""),
+  neededBy: z.coerce.date().optional(),
+});
+
+export type CreateStoryInput = z.infer<typeof CreateStorySchema>;
 
 /** Parse a path segment or form field into a story id, or refuse it. */
 export function storyIdOr400(raw: unknown): number {
@@ -442,6 +470,69 @@ export async function clearFlag(actor: Actor, id: number) {
 // ---------------------------------------------------------------------------
 // The requester's action
 // ---------------------------------------------------------------------------
+
+/**
+ * File a new request from a pasted model link.
+ *
+ * `spoolId` is resolved against `listSpools()` here, server-side — the only
+ * way a client can name a color is by picking one that is actually in stock
+ * right now, not by sending a name and a hex code that no longer match
+ * anything. `material`/`colorName`/`colorHex` are copied onto the row at
+ * this moment and never re-read from Bambuddy afterward, on purpose: the
+ * ticket should keep showing what was picked even if that spool is later
+ * restocked under a different id or archived.
+ *
+ * `processIntake` runs once, synchronously, right after the row commits —
+ * the common case is the requester sees `Slicing` before this call even
+ * returns. It cannot fail this function: a Bambuddy hiccup leaves the
+ * ticket `Requested` with an `errorMessage`, which the cron sync retries
+ * (see src/lib/bambuddy-sync.ts) rather than making the requester resubmit.
+ */
+export async function createStoryFromLink(actor: Actor, input: CreateStoryInput) {
+  const spools = await listSpools();
+  const spool = spools.find((s) => s.id === input.spoolId);
+  if (!spool) {
+    throw problem(409, "That color isn't available any more — refresh and pick again.");
+  }
+
+  const story = await db.story.create({
+    data: {
+      title: input.title,
+      uploaderId: actor.id,
+      status: "Requested",
+      modelUrl: input.modelUrl,
+      quantity: input.quantity,
+      neededBy: input.neededBy ?? null,
+      note: input.note,
+      spoolId: spool.id,
+      material: spool.material,
+      colorName: spool.color_name ?? "Unnamed",
+      colorHex: spool.rgba,
+    },
+    select: { id: true, title: true },
+  });
+
+  await record({
+    action: "story.created",
+    actor,
+    subject: storyRef(story.id),
+    detail: { title: story.title, modelUrl: input.modelUrl, spoolId: spool.id },
+  });
+
+  const owner = await printerOwner();
+  if (owner && owner.id !== actor.id) {
+    await notify({
+      recipientId: owner.id,
+      storyId: story.id,
+      text: `${actor.name} asked for “${story.title}”.`,
+    });
+  }
+
+  await processIntake(story.id);
+
+  refresh(story.id);
+  return { id: story.id, ref: storyRef(story.id), title: story.title };
+}
 
 /**
  * The person who asked for a print withdraws it.
