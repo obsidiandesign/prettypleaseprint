@@ -7,16 +7,13 @@ import { db } from "@/lib/db";
 import { record } from "@/lib/audit";
 import { notify, printerName, printerOwner } from "@/lib/authz";
 import {
+  ALL_STATUSES,
   AuthzError,
-  FLOW,
-  assertTransition,
-  nextStatus,
+  assertDecline,
   storyRef,
   storyScope,
   type Actor,
 } from "@/lib/scope";
-import { copyModel, deleteModel, storageKeyFor } from "@/lib/storage";
-import { extensionOf } from "@/lib/models";
 
 /**
  * Everything that can happen to a ticket, in one place.
@@ -29,13 +26,14 @@ import { extensionOf } from "@/lib/models";
  * who may, from which state, what the uploader is told, and what goes in the
  * trail. A new front door gets all of that by construction.
  *
- * The four rules the admin actions have always had are unchanged, and are
+ * The rules the admin actions have always had are unchanged, and are
  * enforced here rather than in the layer above:
  *
  *   1. Role is checked on every call. Not rendering a button is not
  *      authorisation, and neither is not documenting an endpoint.
- *   2. Transitions go through `assertTransition` — forwards, one step, and
- *      `Declined` only from `Requested`.
+ *   2. `Declined` goes through `assertDecline` — admin only, and only from
+ *      `Requested`. Every other status is *derived*, not moved by hand —
+ *      see `deriveStatus` in scope.ts and the sync path below.
  *   3. The uploader is told. That is the whole point of the Activity panel.
  *   4. An audit row is written *after* the change commits, so the trail
  *      cannot claim something that did not happen.
@@ -72,11 +70,10 @@ export const IdSchema = z.coerce.number().int().positive();
 /**
  * Every status a ticket can be in, for parsing a `?status=` filter.
  *
- * Built from `FLOW` plus `Declined` rather than typed out, so a new step added
- * to the flow is filterable the day it lands. `Declined` is not in `FLOW` on
- * purpose — it is off the board, not along it.
+ * Built from `ALL_STATUSES` rather than typed out, so a new status added
+ * there is filterable the day it lands.
  */
-export const StatusSchema = z.enum([...FLOW, "Declined"] as [string, ...string[]])
+export const StatusSchema = z.enum([...ALL_STATUSES] as [string, ...string[]])
   .transform((s) => s as StoryStatus);
 
 export const ReasonSchema = z
@@ -115,10 +112,15 @@ const firstName = (name: string) => name.trim().split(/\s+/)[0] ?? name;
  * The columns every representation of a story is built from.
  *
  * Written out rather than selecting the whole row, and that is the security
- * control: `storageKey` is the name of an object in the bucket and it is not
- * on this list, so no caller can leak it by forgetting to strip it. Same for
- * the uploader's e-mail address — the board shows a name and initials, and so
- * does the API.
+ * control: the uploader's e-mail address — the board shows a name and
+ * initials, and so does the API — is not on this list, so no caller can leak
+ * it by forgetting to strip it.
+ *
+ * Also deliberately absent: the Bambuddy handoff ids (`libraryFileId`,
+ * `pipelineRunId`, `slicedLibraryFileId`, `queueItemId`, `archiveId`). They
+ * are sync plumbing, not something a requester or the board needs to
+ * render — `status` and `errorMessage` are the requester-facing summary of
+ * what those ids mean at any given moment.
  */
 export const STORY_FIELDS = {
   id: true,
@@ -127,15 +129,17 @@ export const STORY_FIELDS = {
   flagged: true,
   flagReason: true,
   quantity: true,
+  neededBy: true,
+  modelUrl: true,
+  resolvedTitle: true,
+  plateCount: true,
+  spoolId: true,
   material: true,
   colorName: true,
   colorHex: true,
   tip: true,
   note: true,
-  filename: true,
-  fileSize: true,
-  mimeType: true,
-  dims: true,
+  errorMessage: true,
   createdAt: true,
   updatedAt: true,
   uploaderId: true,
@@ -151,11 +155,11 @@ export type StoryRow = Prisma.StoryGetPayload<{ select: typeof STORY_FIELDS }>;
 
 /**
  * What the History view lists: work that is no longer moving through the
- * board. `Delivery` (printed, waiting to be collected) and `Done` (handed
- * over) are the finished states; `Declined` is the terminal branch. Anything
- * still `Requested`/`Accepted`/`Printing` belongs on the rail, not here.
+ * board. `Done` (printed and handed over), `Failed` (Bambuddy couldn't
+ * finish it) and `Declined` are the terminal states. Anything still
+ * `Requested`/`Slicing`/`Ready`/`Printing` belongs on the rail, not here.
  */
-export const HISTORY_STATUSES = ["Delivery", "Done", "Declined"] as const satisfies readonly StoryStatus[];
+export const HISTORY_STATUSES = ["Done", "Failed", "Declined"] as const satisfies readonly StoryStatus[];
 
 export type HistoryFilters = {
   /** One of HISTORY_STATUSES, or undefined for all of them. */
@@ -172,9 +176,10 @@ const HISTORY_FIELDS = {
   status: true,
   material: true,
   colorHex: true,
-  filename: true,
+  modelUrl: true,
   tip: true,
   flagged: true,
+  errorMessage: true,
   createdAt: true,
   uploaderId: true,
   uploader: { select: { name: true, initials: true } },
@@ -301,58 +306,29 @@ async function loadForAdmin(actor: Actor, id: number) {
 // ---------------------------------------------------------------------------
 // The printer owner's actions
 // ---------------------------------------------------------------------------
+//
+// There used to be an `advanceStory` here — a manual, one-step-at-a-time
+// click that moved a ticket forward. That no longer fits: every status but
+// `Declined` is now *derived* from Bambuddy's own state (`deriveStatus` in
+// scope.ts), not moved by hand. Its replacement is a system-triggered sync
+// (poll the story's pipeline run / queue item, apply `deriveStatus`, notify
+// on change) — deliberately not written here, since it isn't a person
+// clicking a button and doesn't fit this file's "every function takes an
+// Actor" contract. That belongs in its own module alongside whatever
+// schedules it (a cron route, most likely), landing with the intake flow
+// that actually creates `libraryFileId`/`pipelineRunId`/`queueItemId` for a
+// sync to have something to poll.
 
 /**
- * Move a ticket one step along the flow. This is both "Accept it" — which is
- * simply `Requested → Accepted` — and every later hop; the button label
- * differs, the operation does not.
- */
-export async function advanceStory(actor: Actor, id: number) {
-  const story = await loadForAdmin(actor, id);
-
-  const next = nextStatus(story.status);
-  if (!next) throw problem(409, `${story.status} is the end of the line.`);
-
-  try {
-    assertTransition(actor, story.status, next);
-  } catch (e) {
-    asProblem(e);
-  }
-
-  await db.story.update({ where: { id: story.id }, data: { status: next } });
-
-  await notify({
-    recipientId: story.uploaderId,
-    storyId: story.id,
-    text: `${firstName(actor.name)} moved “${story.title}” to ${next}.`,
-  });
-  await record({
-    action: "story.status_changed",
-    actor,
-    subject: storyRef(story.id),
-    detail: { from: story.status, to: next, title: story.title },
-  });
-
-  refresh(story.id);
-  return {
-    id: story.id,
-    ref: storyRef(story.id),
-    title: story.title,
-    from: story.status,
-    to: next,
-    uploaderName: story.uploader.name,
-  };
-}
-
-/**
- * Decline. Terminal, and only reachable from `Requested` — once the printer
- * owner has said yes, saying no is a conversation, not a state change.
+ * Decline. Terminal, and only reachable from `Requested` — once a request
+ * has reached Bambuddy, saying no is a conversation and a withdrawal, not a
+ * status change.
  */
 export async function declineStory(actor: Actor, id: number) {
   const story = await loadForAdmin(actor, id);
 
   try {
-    assertTransition(actor, story.status, "Declined");
+    assertDecline(actor, story.status);
   } catch (e) {
     asProblem(e);
   }
@@ -470,19 +446,13 @@ export async function clearFlag(actor: Actor, id: number) {
 /**
  * The person who asked for a print withdraws it.
  *
- * **Only before it reaches the bed.** Allowed while `Requested` (untouched),
- * `Accepted` (agreed but not started) or `Declined` (already dead) — the
- * window a requester should be able to change their mind in when a better
- * model turns up or plans move on, saving filament and time (FRR-101). Once
- * it is `Printing`, `Delivery` or `Done` the owner has committed the bed and
- * the material, and a ticket vanishing from under them — along with the
- * conversation and the audit trail's subject — is no longer the requester's
- * call to make. They can ask.
- *
- * The stored file goes with it. Leaving 50 MB of geometry in object storage
- * for a request nobody can see any more is a slow leak and, for somebody who
- * withdrew a model on purpose, arguably not what they asked for. Comments and
- * notifications cascade at the database.
+ * **Only before Bambuddy has state for it.** Allowed while `Requested`
+ * (nothing sent yet) or `Declined` (already dead) — the window a requester
+ * should be able to change their mind in when a better model turns up or
+ * plans move on (FRR-101). Once it is `Slicing` or later, Bambuddy holds a
+ * library file and possibly a queue item; tearing those down on withdrawal
+ * is real work this app doesn't do yet (see the sync note above), so for
+ * now the ticket stays and the requester asks the owner instead.
  */
 export async function withdrawStory(actor: Actor, id: number) {
   // Scoped read: a client asking after somebody else's story gets the same
@@ -490,7 +460,7 @@ export async function withdrawStory(actor: Actor, id: number) {
   const story = await db.story.findFirst({
     where: { AND: [{ id }, storyScope(actor)] },
     select: {
-      id: true, title: true, status: true, storageKey: true,
+      id: true, title: true, status: true,
       uploaderId: true, uploader: { select: { name: true } },
     },
   });
@@ -502,11 +472,7 @@ export async function withdrawStory(actor: Actor, id: number) {
     throw problem(403, "Only the person who asked for it can withdraw it.");
   }
 
-  if (
-    story.status !== "Requested" &&
-    story.status !== "Accepted" &&
-    story.status !== "Declined"
-  ) {
+  if (story.status !== "Requested" && story.status !== "Declined") {
     throw problem(
       409,
       `${storyRef(story.id)} is already ${story.status.toLowerCase()} — ` +
@@ -519,22 +485,9 @@ export async function withdrawStory(actor: Actor, id: number) {
 
   await db.story.delete({ where: { id: story.id } });
 
-  // After the row is gone, so a failure here cannot leave a story pointing at
-  // an object that is not there. The reverse would be worse: an orphaned
-  // object is invisible, a story with no file is broken in the viewer.
-  try {
-    await deleteModel(story.storageKey);
-  } catch (error) {
-    console.error(`[withdraw] ${ref}: object ${story.storageKey} not removed`, error);
-  }
-
-  // Tell the printer owner when they had it in hand — a request still waiting
-  // on them, or one they had already accepted and were on the hook for.
-  if (
-    owner &&
-    (story.status === "Requested" || story.status === "Accepted") &&
-    owner.id !== actor.id
-  ) {
+  // Tell the printer owner when they had it in hand — a request still
+  // waiting on them.
+  if (owner && story.status === "Requested" && owner.id !== actor.id) {
     await notify({
       recipientId: owner.id,
       text: `${actor.name} withdrew ${ref} — “${story.title}”.`,
@@ -553,43 +506,31 @@ export async function withdrawStory(actor: Actor, id: number) {
 }
 
 /**
- * Print an old request again, without re-uploading it (FRR-102).
+ * Print an old request again, without re-pasting the link (FRR-102).
  *
- * A first print is often a test; when it works, or needs another go, hunting
- * down the model file to re-upload it is friction the app can remove. This
+ * A first print is often a test; when it works, or needs another go, this
  * opens a brand-new `Requested` ticket from any of the requester's own past
- * tickets — a finished one, a declined one, anything — copying every wish
- * field across.
- *
- * The file is *copied*, not shared: a fresh object under a generated key, so
- * the new ticket and the old one own independent geometry and withdrawing
- * either one never disturbs the other's file. Only the person who filed the
- * original may re-queue it — being able to see a ticket (an admin sees all) is
- * not being the person whose request it is to repeat.
+ * tickets — a finished one, a declined one, anything — copying the wish
+ * fields across, but none of the old Bambuddy handoff ids. A requeue is a
+ * fresh request in Bambuddy's eyes too: the same system trigger that
+ * processes any other `Requested` story (see the sync note above) resolves
+ * and imports the link again, rather than this reusing a library file or
+ * queue item that may no longer exist on the Bambuddy side. Only the person
+ * who filed the original may re-queue it — being able to see a ticket (an
+ * admin sees all) is not being the person whose request it is to repeat.
  */
 export async function requeueStory(actor: Actor, id: number) {
   const src = await db.story.findFirst({
     where: { AND: [{ id }, storyScope(actor)] },
     select: {
-      id: true, title: true, quantity: true, material: true, colorName: true,
-      colorHex: true, tip: true, note: true, printSettings: true,
-      filename: true, fileSize: true,
-      mimeType: true, storageKey: true, dims: true, uploaderId: true,
+      id: true, title: true, quantity: true, neededBy: true, modelUrl: true,
+      spoolId: true, material: true, colorName: true, colorHex: true,
+      tip: true, note: true, uploaderId: true,
     },
   });
   if (!src) throw problem(404, "That ticket no longer exists.");
   if (src.uploaderId !== actor.id) {
     throw problem(403, "Only the person who asked for it can print it again.");
-  }
-
-  // Copy the object first, so a failure here opens no ticket that points at
-  // geometry which was never written — the same ordering the upload uses.
-  const destKey = storageKeyFor(extensionOf(src.filename));
-  try {
-    await copyModel(src.storageKey, destKey);
-  } catch (error) {
-    console.error(`[requeue] ${storyRef(src.id)}: object copy failed`, error);
-    throw problem(502, "The file could not be copied. Try again in a moment.");
   }
 
   const created = await db.story.create({
@@ -598,17 +539,14 @@ export async function requeueStory(actor: Actor, id: number) {
       uploaderId: actor.id,
       status: "Requested",
       quantity: src.quantity,
+      neededBy: src.neededBy,
+      modelUrl: src.modelUrl,
+      spoolId: src.spoolId,
       material: src.material,
       colorName: src.colorName,
       colorHex: src.colorHex,
       tip: src.tip,
       note: src.note,
-      printSettings: src.printSettings,
-      filename: src.filename,
-      fileSize: src.fileSize,
-      mimeType: src.mimeType,
-      storageKey: destKey,
-      dims: src.dims,
     },
     select: { id: true },
   });

@@ -242,20 +242,17 @@ model AuditEvent {
   @@map("auditEvent")
 }
 
+/// Driven by polling Bambuddy, not by an admin clicking "advance" — see
+/// `deriveStatus` in scope.ts. `Declined` is the one status a person still
+/// sets by hand, and only from `Requested`, before anything reaches Bambuddy.
 enum StoryStatus {
   Requested
-  Accepted
+  Slicing
+  Ready
   Printing
   Done
-  Delivery
+  Failed
   Declined
-}
-
-enum Material {
-  PLA
-  PETG
-  TPU
-  Resin
 }
 
 model Story {
@@ -267,35 +264,51 @@ model Story {
   uploaderId String
   uploader   User   @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
 
-  quantity  Int      @default(1)
-  material  Material @default(PETG)
-  colorName String
-  colorHex  String
-  tip       String
-  note      String   @default("")
+  quantity Int       @default(1)
+  neededBy DateTime?
+  note     String    @default("")
 
-  /// Free-text print settings the requester optionally notes (layer height,
-  /// infill, supports, temps…), shown to the owner on the ticket so specifics
-  /// do not become a back-and-forth. FRR-103, option A — a plain string, not a
-  /// structured/gated "advanced mode".
-  printSettings String @default("")
+  /// The office "tip jar" (see src/lib/benefits.ts) doesn't fit a family
+  /// request app as-is — left here, defaulted, rather than deleted, so the
+  /// existing Benefit catalog and admin page keep compiling while it's
+  /// decided whether/how to repurpose this for the new intake flow. The new
+  /// form does not collect it.
+  tip String @default("")
+
+  /// The pasted model link (MakerWorld, occasionally elsewhere) — this
+  /// replaces file upload as the intake mechanism entirely.
+  modelUrl String
+
+  /// Filled in from Bambuddy's URL resolution at intake, display only.
+  resolvedTitle String?
+  plateCount    Int?
+
+  // --- color/material, snapshotted from live Bambuddy inventory at intake ---
+  //
+  // Denormalized on purpose: `spoolId` is what was picked, but the spool
+  // itself can be archived or restocked later, and the ticket should keep
+  // showing what the requester actually chose. The owner can always swap the
+  // spool in Bambuddy before printing — this is intake information, not a
+  // binding instruction.
+  spoolId   Int?
+  material  String?
+  colorName String
+  colorHex  String?
 
   flagged    Boolean @default(false)
   flagReason String?
 
-  // --- uploaded asset. Bytes live in object storage, never the web root. ---
-  filename   String
-  fileSize   Int
-  mimeType   String
-  storageKey String
+  // --- the Bambuddy handoff chain — see src/lib/bambuddy.ts. Each is set as
+  // the request clears that stage; earlier ones stay populated afterward. ---
+  libraryFileId       Int?
+  pipelineRunId       Int?
+  slicedLibraryFileId Int?
+  queueItemId         Int?
+  archiveId           Int?
 
-  // --- measured from the mesh at upload time, display only ---
-  //
-  // There is deliberately no `estimate` column. A print time derived from the
-  // bounding box is a guess dressed as a measurement, and the handoff's
-  // definition of done rules out claiming to know what the printer will do.
-  // A real slicer integration would add one back — see src/lib/models.ts.
-  dims String?
+  /// Bambuddy's error_message on a Failed status — shown to the requester
+  /// as-is rather than a generic "something went wrong".
+  errorMessage String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -305,6 +318,7 @@ model Story {
 
   @@index([uploaderId])
   @@index([status])
+  @@index([queueItemId])
   @@map("story")
 }
 

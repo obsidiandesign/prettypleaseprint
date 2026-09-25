@@ -39,69 +39,112 @@ export function storyScope(actor: Actor): Prisma.StoryWhereInput {
 export const storyRef = (id: number) => `PPP-${100 + id}`;
 
 /**
- * The order a request moves through, and the only order it may move in.
+ * The columns the board draws, in the order a request actually moves through
+ * them. Unlike the old flow, nothing here is "the only order it may move
+ * in" — a story's status is derived from Bambuddy's state on every sync
+ * (`deriveStatus`, below), not stepped forward one click at a time. This
+ * array exists for display order only.
  *
- * `Done` is the end, not the middle. It used to sit before `Delivery`, meaning
- * "off the plate" — which left the board with nowhere to put work that was
- * genuinely finished, so delivered tickets stayed on the rail forever and the
- * rail stopped meaning "what is still moving". Now `Delivery` is "printed,
- * waiting to be collected" and `Done` is "handed over", which is also how
- * people actually describe it.
- *
- * Note the enum in schema.prisma keeps its original member order: Postgres
- * cannot reorder enum values without rebuilding the type, and the order there
+ * Note the enum in schema.prisma keeps its own member order: Postgres cannot
+ * reorder enum values without rebuilding the type, and the order there
  * carries no meaning. This array is where the sequence lives.
  */
-export const FLOW = [
+export const BOARD = [
   "Requested",
-  "Accepted",
+  "Slicing",
+  "Ready",
   "Printing",
-  "Delivery",
-  "Done",
 ] as const satisfies readonly StoryStatus[];
 
-/**
- * The columns the board draws — the flow minus its terminal state.
- *
- * The rail carries what is still moving. A finished ticket leaves it and lives
- * on in the profile, which is the whole point of having an end state: without
- * one the board only ever grows.
- */
-export const BOARD = FLOW.slice(0, -1) as readonly StoryStatus[];
+/** Every status a ticket can be in — `BOARD`'s order plus the three that leave it. */
+export const ALL_STATUSES = [...BOARD, "Done", "Failed", "Declined"] as const satisfies readonly StoryStatus[];
 
 /** Is this the end of the line? */
 export function isTerminal(status: StoryStatus): boolean {
-  return status === FLOW[FLOW.length - 1] || status === "Declined";
+  return status === "Done" || status === "Failed" || status === "Declined";
 }
 
-export function nextStatus(current: StoryStatus): StoryStatus | null {
-  const i = (FLOW as readonly string[]).indexOf(current);
-  if (i < 0 || i === FLOW.length - 1) return null;
-  return FLOW[i + 1]!;
+/**
+ * The two pieces of Bambuddy state a story's status is derived from. Either
+ * may be absent — a story that hasn't reached that stage yet simply has
+ * `null`/`undefined` there, which is why `Requested` and `Slicing` fall out
+ * of this without a special case.
+ */
+export type BambuddyProgress = {
+  pipelineRunStatus?:
+    | "queued"
+    | "slicing"
+    | "dispatching"
+    | "in_progress"
+    | "completed"
+    | "failed"
+    | "partial_failure"
+    | "cancelled"
+    | null;
+  queueItemStatus?: "pending" | "printing" | "completed" | "failed" | "skipped" | "cancelled" | null;
+};
+
+/**
+ * What a story's status should be right now, given the latest known state of
+ * its Bambuddy handoff (see src/lib/bambuddy.ts for how that's fetched).
+ *
+ * Pure and total on purpose, the same reason the rest of this file has no
+ * session or database in it: this is called on every sync, potentially for
+ * every open story, and it needs to be cheap and exercised directly by
+ * tests rather than re-implemented per caller.
+ *
+ * `Declined` is deliberately not derivable here — it's the one status a
+ * person still sets by hand, and only before any Bambuddy state exists.
+ * `deriveStatus` is never called for a story that's already `Declined`.
+ */
+export function deriveStatus(progress: BambuddyProgress): StoryStatus {
+  switch (progress.queueItemStatus) {
+    case "pending":
+      return "Ready";
+    case "printing":
+      return "Printing";
+    case "completed":
+      return "Done";
+    case "failed":
+    case "cancelled":
+    case "skipped":
+      return "Failed";
+  }
+
+  switch (progress.pipelineRunStatus) {
+    case "completed":
+      // The queue item is created in the same step that observes this
+      // completion — see stories.ts — so this case is transient in
+      // practice. Treated as "not yet queued" rather than "ready" if it's
+      // ever seen on its own, since there is no queue item to point at.
+      return "Slicing";
+    case "failed":
+    case "partial_failure":
+    case "cancelled":
+      return "Failed";
+    case "queued":
+    case "slicing":
+    case "dispatching":
+    case "in_progress":
+      return "Slicing";
+  }
+
+  return "Requested";
 }
 
 export class AuthzError extends Error {}
 
 /**
- * Only the admin moves a story, only forwards, only one step at a time.
- * `Declined` is reachable from `Requested` alone.
+ * Only the admin declines a story, and only before it has gone anywhere —
+ * once Bambuddy has state for it, saying no is a conversation and a
+ * withdrawal, not a status change.
  */
-export function assertTransition(
-  actor: Actor,
-  from: StoryStatus,
-  to: StoryStatus,
-): void {
+export function assertDecline(actor: Actor, from: StoryStatus): void {
   if (actor.role !== "admin") {
-    throw new AuthzError("Only the printer owner moves a story along.");
+    throw new AuthzError("Only the printer owner can decline a request.");
   }
-  if (to === "Declined") {
-    if (from !== "Requested") {
-      throw new AuthzError(`Cannot decline a story that is already ${from}.`);
-    }
-    return;
-  }
-  if (nextStatus(from) !== to) {
-    throw new AuthzError(`${from} → ${to} is not a step along the flow.`);
+  if (from !== "Requested") {
+    throw new AuthzError(`Cannot decline a request that is already ${from}.`);
   }
 }
 
