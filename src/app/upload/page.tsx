@@ -35,7 +35,7 @@ export default async function UploadPage({
             Pretty please print
           </h1>
           <p className="m-0 mb-[26.4px] text-[16.5px] leading-[1.5] text-ink-2 text-pretty">
-            Paste a link to the model — a MakerWorld page is easiest. {owner}
+            Paste a link to the model's MakerWorld page. {owner}
             {" "}gets a ping, it slices on its own, and your order goes up on
             the rail as a ticket you can follow.
           </p>

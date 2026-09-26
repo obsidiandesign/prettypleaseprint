@@ -15,7 +15,7 @@ import {
   type Actor,
 } from "@/lib/scope";
 import { isPla, listSpools } from "@/lib/bambuddy";
-import { processIntake } from "@/lib/bambuddy-sync";
+import { intakeNotRunning, processIntake } from "@/lib/bambuddy-sync";
 import { QuantitySchema } from "@/lib/catalog";
 
 /**
@@ -107,6 +107,24 @@ export function isHttpUrl(value: string): boolean {
 }
 
 /**
+ * A MakerWorld model page — the only kind of link intake can hand to
+ * Bambuddy (`resolveMakerWorldUrl`). Anything else would fail to resolve on
+ * every sync pass forever, so it's refused up front instead.
+ */
+export function isMakerWorldModelUrl(value: string): boolean {
+  try {
+    const { hostname, pathname } = new URL(value);
+    const host = hostname.toLowerCase();
+    const onMakerWorld = ["makerworld.com", "makerworld.com.cn"].some(
+      (site) => host === site || host.endsWith(`.${site}`),
+    );
+    return onMakerWorld && /\/models\/\d+/.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * A new request: a link, not a file. `spoolId` is the only way color and
  * material reach the row — see `createStoryFromLink`, which looks the spool
  * up in live Bambuddy inventory rather than trusting a client-supplied name
@@ -123,7 +141,8 @@ export const CreateStorySchema = z.object({
     .trim()
     .min(1, "Paste a model link.")
     .max(2000, "That link is too long.")
-    .refine(isHttpUrl, "That doesn't look like a web link — paste the page's https:// address."),
+    .refine(isHttpUrl, "That doesn't look like a web link — paste the page's https:// address.")
+    .refine(isMakerWorldModelUrl, "Only MakerWorld model links work for now — paste the model's makerworld.com page."),
   spoolId: z.coerce.number().int().positive("Pick a color."),
   quantity: QuantitySchema,
   note: z.string().trim().max(2000, "That note is very long.").optional().default(""),
@@ -137,6 +156,14 @@ export function storyIdOr400(raw: unknown): number {
   const parsed = IdSchema.safeParse(raw);
   if (!parsed.success) throw problem(400, "That is not a ticket.");
   return parsed.data;
+}
+
+/** Refused because `processIntake` holds the story, or just moved it past `Requested`. */
+function handingOff(id: number) {
+  return problem(
+    409,
+    `${storyRef(id)} is being handed to Bambuddy right now — refresh in a minute and try again.`,
+  );
 }
 
 function refresh(id: number) {
@@ -376,7 +403,14 @@ export async function declineStory(actor: Actor, id: number) {
     asProblem(e);
   }
 
-  await db.story.update({ where: { id: story.id }, data: { status: "Declined" } });
+  // Conditional, not a plain update: intake may have claimed the story since
+  // it was read, and once intake starts a pipeline run Bambuddy can't recall
+  // it. Declining under it would be overwritten, and the print would go on.
+  const declined = await db.story.updateMany({
+    where: { id: story.id, status: "Requested", ...intakeNotRunning() },
+    data: { status: "Declined" },
+  });
+  if (declined.count === 0) throw handingOff(story.id);
 
   await notify({
     recipientId: story.uploaderId,
@@ -593,7 +627,12 @@ export async function withdrawStory(actor: Actor, id: number) {
   const ref = storyRef(story.id);
   const owner = await printerOwner();
 
-  await db.story.delete({ where: { id: story.id } });
+  // Same race as declining — see `declineStory`. Deleting under a running
+  // intake would orphan whatever it had already created in Bambuddy.
+  const withdrawn = await db.story.deleteMany({
+    where: { id: story.id, status: story.status, ...intakeNotRunning() },
+  });
+  if (withdrawn.count === 0) throw handingOff(story.id);
 
   // Tell the printer owner when they had it in hand — a request still
   // waiting on them.

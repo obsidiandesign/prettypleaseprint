@@ -275,7 +275,7 @@ model Story {
   /// form does not collect it.
   tip String @default("")
 
-  /// The pasted model link (MakerWorld, occasionally elsewhere) — this
+  /// The pasted MakerWorld model link — this
   /// replaces file upload as the intake mechanism entirely.
   modelUrl String
 

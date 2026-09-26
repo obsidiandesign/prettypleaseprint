@@ -1,5 +1,5 @@
 import "server-only";
-import type { StoryStatus } from "@prisma/client";
+import type { Prisma, StoryStatus } from "@prisma/client";
 
 import { db } from "@/lib/db";
 import { record } from "@/lib/audit";
@@ -96,6 +96,21 @@ function sleep(ms: number): Promise<void> {
  */
 const INTAKE_LEASE_MS = 10 * 60 * 1000;
 
+/**
+ * Where-clause for "no `processIntake` is running on this story right now".
+ * Decline and withdraw use it too (stories.ts): intake can't be recalled once
+ * it has started a pipeline run — Bambuddy has no cancel — so they wait for
+ * the claim instead of racing it.
+ */
+export function intakeNotRunning(now = new Date()): Prisma.StoryWhereInput {
+  return {
+    OR: [
+      { intakeStartedAt: null },
+      { intakeStartedAt: { lt: new Date(now.getTime() - INTAKE_LEASE_MS) } },
+    ],
+  };
+}
+
 const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
 
 /**
@@ -107,15 +122,17 @@ const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partia
  * Cloud expired) heals itself once the underlying problem is fixed, without
  * anyone having to retry by hand.
  *
- * Polls tightly (a few seconds apart) for up to ~40s right after starting
- * the run, specifically to catch and secure a queue entry as early as
- * possible — see `secureQueueEntries`. If dispatch hasn't happened by then,
- * the story is still saved as `Slicing`; `syncStory`'s regular poll picks
- * up the queue entry (and secures it) whenever it does appear.
+ * The handoff — `libraryFileId`, `pipelineRunId`, `Slicing` — is saved the
+ * moment the pipeline run exists. Then it polls tightly (a few seconds
+ * apart) for up to ~40s, specifically to catch and secure a queue entry as
+ * early as possible — see `secureQueueEntries` — and tells the requester
+ * where the story landed. If dispatch hasn't happened by then, or the poll
+ * fails, `syncStory`'s regular poll picks up the queue entry (and secures
+ * it) whenever it does appear.
  *
- * Every failure is swallowed into `errorMessage` rather than thrown: a
- * failed intake attempt is not a bug, it's exactly the case `Requested` with
- * an error exists for. A notification to the admin only fires the *first*
+ * Never throws. A failure before the handoff is swallowed into
+ * `errorMessage` and retried: a failed intake attempt is not a bug, it's
+ * exactly the case `Requested` with an error exists for. A notification to the admin only fires the *first*
  * time a given error appears, so a problem that needs a human (Bambu Cloud
  * re-auth, most likely) is announced once rather than every sync interval.
  */
@@ -138,15 +155,13 @@ export async function processIntake(storyId: number): Promise<void> {
       id: story.id,
       status: "Requested",
       libraryFileId: null,
-      OR: [
-        { intakeStartedAt: null },
-        { intakeStartedAt: { lt: new Date(now.getTime() - INTAKE_LEASE_MS) } },
-      ],
+      ...intakeNotRunning(now),
     },
     data: { intakeStartedAt: now },
   });
   if (claimed.count === 0) return;
 
+  let handoff: PipelineRun;
   try {
     const resolved = await resolveMakerWorldUrl(story.modelUrl);
 
@@ -185,51 +200,27 @@ export async function processIntake(storyId: number): Promise<void> {
       throw error;
     }
 
-    let queueItemId: number | null = null;
-    for (let i = 0; i < 20; i++) {
-      const secured = await secureQueueEntries(run);
-      if (secured.length > 0) {
-        queueItemId = secured[0]!;
-        break;
-      }
-      if (RUN_SETTLED.has(run.status)) break;
-
-      await sleep(2000);
-      const refreshed = await getPipelineRun(run.id);
-      if (!refreshed) break;
-      run = refreshed;
-    }
-
-    const item = queueItemId ? await getQueueItem(queueItemId) : null;
-
-    await db.story.update({
-      where: { id: story.id },
+    // Record the handoff the moment the run exists, before anything else can
+    // throw. From here on the story belongs to `syncStory`, not to a retry of
+    // this function: a retry would start a second run, and nothing would
+    // ever watch the first one's queue entry — which then auto-starts.
+    // Guarded on `Requested` as a backstop; decline and withdraw already
+    // refuse while the claim above is held.
+    const handedOff = await db.story.updateMany({
+      where: { id: story.id, status: "Requested" },
       data: {
         libraryFileId: imported.library_file_id,
         pipelineRunId: run.id,
-        queueItemId,
-        slicedLibraryFileId: run.sliced_library_file_id,
-        status: item ? deriveStatus({ queueItemStatus: item.status }) : deriveStatus({ pipelineRunStatus: run.status }),
-        archiveId: item?.archive_id ?? null,
+        status: "Slicing",
         resolvedTitle: resolvedTitleFrom(resolved),
-        errorMessage: item?.waiting_reason ?? null,
+        errorMessage: null,
       },
     });
-
-    const to = item ? "Ready" : "Slicing";
-    await notify({
-      recipientId: story.uploaderId,
-      storyId: story.id,
-      text: `“${story.title}” is now ${to}.`,
-    });
-    await record({
-      action: "story.status_changed",
-      subject: storyRef(story.id),
-      detail: { from: "Requested", to, title: story.title },
-    });
-    if (item) {
-      await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — sliced and ready to print.`, story.id);
+    if (handedOff.count === 0) {
+      console.error(`[intake] ${storyRef(story.id)} left Requested mid-intake; pipeline run ${run.id} is unowned`);
+      return;
     }
+    handoff = run;
   } catch (error) {
     const message =
       error instanceof BambuddyCloudExpiredError || error instanceof IntakeProblem
@@ -246,6 +237,50 @@ export async function processIntake(storyId: number): Promise<void> {
         detail: { title: story.title, error: error instanceof Error ? error.message : String(error) },
       });
     }
+    return;
+  }
+
+  // Past the handoff: poll tightly to secure the queue entry early. A
+  // failure here is not an intake failure — `syncStory` secures and advances
+  // the same run on its next pass — so it only ends the tight poll.
+  const asSlicing = { ...story, status: "Slicing" as StoryStatus };
+  let run = handoff;
+  try {
+    for (let i = 0; i < 20; i++) {
+      const secured = await secureQueueEntries(run);
+      if (secured.length > 0) {
+        const item = await getQueueItem(secured[0]!);
+        const to = deriveStatus({ queueItemStatus: item.status });
+        await applyStatusChange(asSlicing, to, {
+          queueItemId: secured[0]!,
+          slicedLibraryFileId: run.sliced_library_file_id,
+          archiveId: item.archive_id,
+          errorMessage: to === "Failed" ? item.error_message : item.waiting_reason,
+          intakeStartedAt: null,
+        }, "Requested");
+        return;
+      }
+      if (RUN_SETTLED.has(run.status)) break;
+
+      await sleep(2000);
+      const refreshed = await getPipelineRun(run.id);
+      if (!refreshed) break;
+      run = refreshed;
+    }
+
+    const to = deriveStatus({ pipelineRunStatus: run.status });
+    await applyStatusChange(asSlicing, to, {
+      slicedLibraryFileId: run.sliced_library_file_id,
+      errorMessage: to === "Failed" ? run.error_message : null,
+      intakeStartedAt: null,
+    }, "Requested");
+  } catch (error) {
+    // The handoff is already saved, so the story is safe either way; at
+    // worst the requester hears about its status one sync pass later.
+    console.error(`[intake] ${storyRef(story.id)}: polling pipeline run ${run.id} failed; sync will continue`, error);
+    await db.story
+      .update({ where: { id: story.id }, data: { intakeStartedAt: null } })
+      .catch(() => {}); // row withdrawn, or the DB is down — the lease expires on its own
   }
 }
 
@@ -258,7 +293,19 @@ export async function processIntake(storyId: number): Promise<void> {
 async function applyStatusChange(
   story: { id: number; title: string; status: StoryStatus; uploaderId: string },
   to: StoryStatus,
-  extra: { queueItemId?: number; slicedLibraryFileId?: number | null; archiveId?: number | null; errorMessage?: string | null } = {},
+  extra: {
+    queueItemId?: number;
+    slicedLibraryFileId?: number | null;
+    archiveId?: number | null;
+    errorMessage?: string | null;
+    intakeStartedAt?: null;
+  } = {},
+  /**
+   * The status the requester last heard about, when it differs from the
+   * row's. Intake writes `Slicing` silently at handoff and announces the
+   * whole move from `Requested` once it knows where the story landed.
+   */
+  announcedFrom: StoryStatus = story.status,
 ): Promise<void> {
   await db.story.update({
     where: { id: story.id },
@@ -268,7 +315,7 @@ async function applyStatusChange(
   // `extra` (waiting_reason, archive_id) is worth keeping fresh even on a
   // poll that doesn't move the status — the write above already did that.
   // Only the notify/audit noise below is conditional on an actual change.
-  if (to === story.status) return;
+  if (to === announcedFrom) return;
 
   const ref = storyRef(story.id);
   await notify({
@@ -283,7 +330,7 @@ async function applyStatusChange(
   await record({
     action: "story.status_changed",
     subject: ref,
-    detail: { from: story.status, to, title: story.title },
+    detail: { from: announcedFrom, to, title: story.title },
   });
 }
 
@@ -306,10 +353,18 @@ export async function syncStory(storyId: number): Promise<void> {
     where: { id: storyId },
     select: {
       id: true, title: true, status: true, uploaderId: true,
-      pipelineRunId: true, queueItemId: true,
+      pipelineRunId: true, queueItemId: true, intakeStartedAt: true,
     },
   });
   if (!story || isTerminal(story.status)) return;
+
+  // `processIntake` may still be in its tight poll for this story. Securing
+  // queue entries below stays on regardless — it's idempotent, and the one
+  // thing that must not wait on a lease if intake died mid-poll — but the
+  // status change is left to intake so the requester isn't told twice.
+  const intakeRunning =
+    story.intakeStartedAt !== null &&
+    story.intakeStartedAt.getTime() > Date.now() - INTAKE_LEASE_MS;
 
   if (story.queueItemId) {
     if (story.status === "Ready") {
@@ -337,6 +392,7 @@ export async function syncStory(storyId: number): Promise<void> {
   }
 
   const secured = await secureQueueEntries(run);
+  if (intakeRunning) return;
   if (secured.length > 0) {
     const queueItemId = secured[0]!;
     const item = await getQueueItem(queueItemId);
