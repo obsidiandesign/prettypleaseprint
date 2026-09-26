@@ -116,7 +116,7 @@ export async function processIntake(storyId: number): Promise<void> {
   const story = await db.story.findUnique({
     where: { id: storyId },
     select: {
-      id: true, title: true, modelUrl: true, status: true,
+      id: true, title: true, modelUrl: true, status: true, uploaderId: true,
       quantity: true, libraryFileId: true, errorMessage: true,
     },
   });
@@ -191,10 +191,16 @@ export async function processIntake(storyId: number): Promise<void> {
       },
     });
 
+    const to = item ? "Ready" : "Slicing";
+    await notify({
+      recipientId: story.uploaderId,
+      storyId: story.id,
+      text: `“${story.title}” is now ${to}.`,
+    });
     await record({
       action: "story.status_changed",
       subject: storyRef(story.id),
-      detail: { from: "Requested", to: item ? "Ready" : "Slicing", title: story.title },
+      detail: { from: "Requested", to, title: story.title },
     });
     if (item) {
       await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — sliced and ready to print.`, story.id);
