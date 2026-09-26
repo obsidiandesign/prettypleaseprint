@@ -52,20 +52,24 @@ export class BambuddyError extends Error {
 }
 
 /**
- * Bambu Cloud's token on the Bambuddy side has expired. Nothing that touches
- * MakerWorld will work until an admin re-signs-in to Bambu Cloud inside
- * Bambuddy's own UI.
+ * Bambu Cloud isn't usable from the Bambuddy side — never linked, or linked
+ * and since expired. Nothing that downloads from MakerWorld will work until
+ * an admin signs in to Bambu Cloud inside Bambuddy's own UI.
  *
- * This is never thrown automatically by `bambuddyFetch` — the exact shape of
- * a failed resolve/import response wasn't confirmed against a live instance,
- * so guessing at it here would be fragile. Call `getMakerWorldStatus()`
- * before resolving or importing and throw this yourself when
- * `sign_in_expired` is true; that is Bambuddy's own documented signal for
- * this condition, not an inference from a failure.
+ * Confirmed against a live instance: `POST /makerworld/import` answers
+ * `401 {"detail":"Downloading files from MakerWorld requires a Bambu Cloud
+ * login"}` in exactly this case — and it does so even for a model already
+ * present in the library (`already_imported_library_ids` on the resolve
+ * response), so there's no cache path that avoids it. Note this is *not*
+ * reliably reflected by `getMakerWorldStatus().sign_in_expired`, which is
+ * `false` when Bambu Cloud was simply never linked (as opposed to linked and
+ * expired) — so the useful check is catching this 401 from `import` itself,
+ * which is what `resolveMakerWorldUrl`/`importMakerWorldModel`'s callers
+ * should do, rather than pre-checking a flag that doesn't cover both cases.
  */
 export class BambuddyCloudExpiredError extends BambuddyError {
   constructor() {
-    super(409, "Bambu Cloud sign-in has expired on the Bambuddy side.");
+    super(401, "Bambu Cloud isn't connected in Bambuddy — an admin needs to sign it in there.");
     this.name = "BambuddyCloudExpiredError";
   }
 }
@@ -105,6 +109,15 @@ export async function getMakerWorldStatus(): Promise<MakerWorldStatus> {
  * verbatim from MakerWorld's own API. Kept opaque here for the same reason:
  * MakerWorld can add fields (badges, license variants) a strict type would
  * silently drop.
+ *
+ * Confirmed against a live resolve: `design.titleTranslated` (falling back
+ * to `design.title`, which is often the model's original, non-English
+ * name) is a display title — see `resolvedTitleFrom` in bambuddy-sync.ts.
+ * `instances` are community-submitted print-profile variants (different
+ * layer heights/infill, not plates), each with its own numeric `profileId`,
+ * not a plate count — resist the temptation to read `instances.length` as
+ * one. Bambuddy works `resolve` without any Bambu Cloud link at all; only
+ * `import` needs it (see `BambuddyCloudExpiredError`).
  */
 export type MakerWorldResolvedModel = {
   model_id: number;

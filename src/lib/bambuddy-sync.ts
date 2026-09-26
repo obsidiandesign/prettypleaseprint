@@ -7,13 +7,14 @@ import { notify, printerOwner } from "@/lib/authz";
 import { deriveStatus, isTerminal, storyRef } from "@/lib/scope";
 import {
   BambuddyCloudExpiredError,
+  BambuddyError,
   addToQueue,
-  getMakerWorldStatus,
   getPipelineRun,
   getQueueItem,
   importMakerWorldModel,
   resolveMakerWorldUrl,
   runSlicerPipeline,
+  type MakerWorldResolvedModel,
 } from "@/lib/bambuddy";
 
 /**
@@ -31,6 +32,17 @@ async function notifyAdmin(text: string, storyId?: number): Promise<void> {
   const owner = await printerOwner();
   if (!owner) return;
   await notify({ recipientId: owner.id, storyId, text });
+}
+
+/**
+ * A display title from a resolved model, best-effort. `titleTranslated` is
+ * MakerWorld's English (or viewer-locale) translation; `title` is often the
+ * original, sometimes non-English, name. Both confirmed present on a live
+ * resolve — see the type's own comment in bambuddy.ts.
+ */
+function resolvedTitleFrom(resolved: MakerWorldResolvedModel): string | null {
+  const title = resolved.design.titleTranslated ?? resolved.design.title;
+  return typeof title === "string" && title.trim() ? title.trim() : null;
 }
 
 /**
@@ -57,14 +69,24 @@ export async function processIntake(storyId: number): Promise<void> {
   if (!story || story.status !== "Requested" || story.libraryFileId) return;
 
   try {
-    const cloudStatus = await getMakerWorldStatus();
-    if (cloudStatus.sign_in_expired) throw new BambuddyCloudExpiredError();
-
     const resolved = await resolveMakerWorldUrl(story.modelUrl);
-    const imported = await importMakerWorldModel({
-      model_id: resolved.model_id,
-      profile_id: resolved.profile_id,
-    });
+
+    let imported;
+    try {
+      imported = await importMakerWorldModel({
+        model_id: resolved.model_id,
+        profile_id: resolved.profile_id,
+      });
+    } catch (error) {
+      // Confirmed live: a missing/expired Bambu Cloud link answers exactly
+      // this 401, even for a model already in the library — see
+      // BambuddyCloudExpiredError's own comment in bambuddy.ts.
+      if (error instanceof BambuddyError && error.status === 401) {
+        throw new BambuddyCloudExpiredError();
+      }
+      throw error;
+    }
+
     const run = await runSlicerPipeline(imported.library_file_id);
 
     await db.story.update({
@@ -73,6 +95,7 @@ export async function processIntake(storyId: number): Promise<void> {
         libraryFileId: imported.library_file_id,
         pipelineRunId: run.id,
         status: "Slicing",
+        resolvedTitle: resolvedTitleFrom(resolved),
         errorMessage: null,
       },
     });
