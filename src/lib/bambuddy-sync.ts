@@ -8,13 +8,14 @@ import { deriveStatus, isTerminal, storyRef } from "@/lib/scope";
 import {
   BambuddyCloudExpiredError,
   BambuddyError,
-  addToQueue,
   getPipelineRun,
   getQueueItem,
   importMakerWorldModel,
   resolveMakerWorldUrl,
   runSlicerPipeline,
+  setManualStart,
   type MakerWorldResolvedModel,
+  type PipelineRun,
 } from "@/lib/bambuddy";
 
 /**
@@ -27,6 +28,13 @@ import {
  * takes an Actor" rule in stories.ts is about authorising a person's action,
  * and there is no person here to authorise.
  */
+
+/**
+ * A specific, human-readable reason `processIntake` gives up, distinct from
+ * a raw `BambuddyError` — the message is meant to reach the admin verbatim,
+ * the way `BambuddyCloudExpiredError`'s does.
+ */
+class IntakeProblem extends Error {}
 
 async function notifyAdmin(text: string, storyId?: number): Promise<void> {
   const owner = await printerOwner();
@@ -46,14 +54,57 @@ function resolvedTitleFrom(resolved: MakerWorldResolvedModel): string | null {
 }
 
 /**
+ * Force manual-start on every queue entry a run has produced so far.
+ *
+ * This is the one safety-critical operation in this whole module. Confirmed
+ * live: a Slicer Pipeline run creates its queue entry as soon as it reaches
+ * `dispatching` — often well before the run is `completed` — wanting to
+ * auto-start the instant a printer is free, and Bambuddy has no setting
+ * that makes it wait for a person instead. There is no way to prevent that
+ * entry from being created wanting to auto-start; the only lever is to
+ * PATCH it to `manual_start: true` as fast as possible after it exists.
+ * Idempotent and safe to call every poll: a queue item past `pending`
+ * refuses the PATCH with a 400, which just means it's a no-op here, not an
+ * error.
+ *
+ * Returns every queue entry id found on this run, whether or not this call
+ * is what secured it (an earlier call may already have).
+ */
+async function secureQueueEntries(run: PipelineRun): Promise<number[]> {
+  const ids = run.jobs.map((job) => job.queue_entry_id).filter((id): id is number => id != null);
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        await setManualStart(id);
+      } catch (error) {
+        if (error instanceof BambuddyError && error.status === 400) return; // already past pending
+        console.error(`[sync] failed to secure queue entry ${id}`, error);
+      }
+    }),
+  );
+  return ids;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
+
+/**
  * Send a request to Bambuddy for the first time: resolve, import, kick off
  * the standard-PLA pipeline (`BAMBUDDY_PIPELINE_ID` — see bambuddy.ts,
  * there's only the one). Called once, synchronously, right after a story is
- * created — the common case is the requester sees "Slicing" within the same
- * request — and again for any story `syncOpenStories` still finds
- * `Requested` on a later pass, so a transient failure (Bambuddy briefly
- * down, Bambu Cloud expired) heals itself once the underlying problem is
- * fixed, without anyone having to retry by hand.
+ * created, and again for any story `syncOpenStories` still finds `Requested`
+ * on a later pass, so a transient failure (Bambuddy briefly down, Bambu
+ * Cloud expired) heals itself once the underlying problem is fixed, without
+ * anyone having to retry by hand.
+ *
+ * Polls tightly (a few seconds apart) for up to ~40s right after starting
+ * the run, specifically to catch and secure a queue entry as early as
+ * possible — see `secureQueueEntries`. If dispatch hasn't happened by then,
+ * the story is still saved as `Slicing`; `syncStory`'s regular poll picks
+ * up the queue entry (and secures it) whenever it does appear.
  *
  * Every failure is swallowed into `errorMessage` rather than thrown: a
  * failed intake attempt is not a bug, it's exactly the case `Requested` with
@@ -64,7 +115,10 @@ function resolvedTitleFrom(resolved: MakerWorldResolvedModel): string | null {
 export async function processIntake(storyId: number): Promise<void> {
   const story = await db.story.findUnique({
     where: { id: storyId },
-    select: { id: true, title: true, modelUrl: true, status: true, libraryFileId: true, errorMessage: true },
+    select: {
+      id: true, title: true, modelUrl: true, status: true,
+      quantity: true, libraryFileId: true, errorMessage: true,
+    },
   });
   if (!story || story.status !== "Requested" || story.libraryFileId) return;
 
@@ -87,27 +141,67 @@ export async function processIntake(storyId: number): Promise<void> {
       throw error;
     }
 
-    const run = await runSlicerPipeline(imported.library_file_id);
+    let run: PipelineRun;
+    try {
+      run = await runSlicerPipeline(imported.library_file_id, story.quantity);
+    } catch (error) {
+      // Confirmed live: refused with 409 and an eligibility report when the
+      // pipeline has no target printer or model class configured — see
+      // BAMBUDDY_PIPELINE_ID in .env.example. Distinct from a transient
+      // failure: nothing here self-heals until an admin fixes the pipeline
+      // in Bambuddy, so it's worth naming specifically rather than folding
+      // into the generic message below.
+      if (error instanceof BambuddyError && error.status === 409) {
+        throw new IntakeProblem(
+          "Bambuddy's Slicer Pipeline isn't configured with a target printer or " +
+            "model class — fix this in Bambuddy under Settings → Slicer Pipelines.",
+        );
+      }
+      throw error;
+    }
+
+    let queueItemId: number | null = null;
+    for (let i = 0; i < 20; i++) {
+      const secured = await secureQueueEntries(run);
+      if (secured.length > 0) {
+        queueItemId = secured[0]!;
+        break;
+      }
+      if (RUN_SETTLED.has(run.status)) break;
+
+      await sleep(2000);
+      const refreshed = await getPipelineRun(run.id);
+      if (!refreshed) break;
+      run = refreshed;
+    }
+
+    const item = queueItemId ? await getQueueItem(queueItemId) : null;
 
     await db.story.update({
       where: { id: story.id },
       data: {
         libraryFileId: imported.library_file_id,
         pipelineRunId: run.id,
-        status: "Slicing",
+        queueItemId,
+        slicedLibraryFileId: run.sliced_library_file_id,
+        status: item ? deriveStatus({ queueItemStatus: item.status }) : deriveStatus({ pipelineRunStatus: run.status }),
+        archiveId: item?.archive_id ?? null,
         resolvedTitle: resolvedTitleFrom(resolved),
-        errorMessage: null,
+        errorMessage: item?.waiting_reason ?? null,
       },
     });
 
     await record({
       action: "story.status_changed",
       subject: storyRef(story.id),
-      detail: { from: "Requested", to: "Slicing", title: story.title },
+      detail: { from: "Requested", to: item ? "Ready" : "Slicing", title: story.title },
     });
+    if (item) {
+      await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — sliced and ready to print.`, story.id);
+    }
   } catch (error) {
     const message =
-      error instanceof BambuddyCloudExpiredError
+      error instanceof BambuddyCloudExpiredError || error instanceof IntakeProblem
         ? error.message
         : "Bambuddy couldn't take this request. It'll retry automatically."; // detail withheld from the requester; see the audit row for the real message
 
@@ -133,14 +227,17 @@ export async function processIntake(storyId: number): Promise<void> {
 async function applyStatusChange(
   story: { id: number; title: string; status: StoryStatus; uploaderId: string },
   to: StoryStatus,
-  extra: { archiveId?: number | null; errorMessage?: string | null } = {},
+  extra: { queueItemId?: number; slicedLibraryFileId?: number | null; archiveId?: number | null; errorMessage?: string | null } = {},
 ): Promise<void> {
-  if (to === story.status) return;
-
   await db.story.update({
     where: { id: story.id },
     data: { status: to, ...extra },
   });
+
+  // `extra` (waiting_reason, archive_id) is worth keeping fresh even on a
+  // poll that doesn't move the status — the write above already did that.
+  // Only the notify/audit noise below is conditional on an actual change.
+  if (to === story.status) return;
 
   const ref = storyRef(story.id);
   await notify({
@@ -163,11 +260,15 @@ async function applyStatusChange(
  * Advance a story that's already reached Bambuddy (`libraryFileId` is set).
  * Two stages, told apart by whether a queue item exists yet:
  *
- *   - No `queueItemId`: watch the pipeline run. Once it completes, this is
- *     the one place a queue item gets created — `addToQueue` — which is why
- *     this function, not `deriveStatus`, owns that handoff.
+ *   - No `queueItemId`: watch the pipeline run, and — every poll, not just
+ *     once — check for a queue entry among its jobs and secure it the
+ *     moment one appears. This is the fallback for whatever `processIntake`'s
+ *     own tight poll didn't catch; see `secureQueueEntries`'s own comment
+ *     for why that matters.
  *   - `queueItemId` set: watch the queue item and apply `deriveStatus`
- *     directly; Bambuddy's own state is the entire answer from here on.
+ *     directly. Also re-asserts manual-start defensively while the item is
+ *     still `pending` — cheap, and this is the one thing in the whole flow
+ *     worth being paranoid about twice.
  */
 export async function syncStory(storyId: number): Promise<void> {
   const story = await db.story.findUnique({
@@ -180,11 +281,18 @@ export async function syncStory(storyId: number): Promise<void> {
   if (!story || isTerminal(story.status)) return;
 
   if (story.queueItemId) {
+    if (story.status === "Ready") {
+      try {
+        await setManualStart(story.queueItemId);
+      } catch {
+        // Best effort — getQueueItem just below is the source of truth either way.
+      }
+    }
     const item = await getQueueItem(story.queueItemId);
     const to = deriveStatus({ queueItemStatus: item.status });
     await applyStatusChange(story, to, {
       archiveId: item.archive_id,
-      errorMessage: to === "Failed" ? item.error_message : null,
+      errorMessage: to === "Failed" ? item.error_message : item.waiting_reason,
     });
     return;
   }
@@ -197,15 +305,17 @@ export async function syncStory(storyId: number): Promise<void> {
     return;
   }
 
-  if (run.status === "completed") {
-    if (!run.sliced_library_file_id) {
-      console.error(`[sync] ${storyRef(story.id)}: run ${run.id} completed with no sliced file`);
-      await applyStatusChange(story, "Failed", { errorMessage: "Slicing finished with nothing to queue." });
-      return;
-    }
-    const item = await addToQueue(run.sliced_library_file_id);
-    await db.story.update({ where: { id: story.id }, data: { slicedLibraryFileId: run.sliced_library_file_id, queueItemId: item.id } });
-    await applyStatusChange(story, deriveStatus({ queueItemStatus: item.status }));
+  const secured = await secureQueueEntries(run);
+  if (secured.length > 0) {
+    const queueItemId = secured[0]!;
+    const item = await getQueueItem(queueItemId);
+    const to = deriveStatus({ queueItemStatus: item.status });
+    await applyStatusChange(story, to, {
+      queueItemId,
+      slicedLibraryFileId: run.sliced_library_file_id,
+      archiveId: item.archive_id,
+      errorMessage: to === "Failed" ? item.error_message : item.waiting_reason,
+    });
     return;
   }
 

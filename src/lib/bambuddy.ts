@@ -166,18 +166,35 @@ export type PipelineRunStatus =
   | "partial_failure"
   | "cancelled";
 
+/**
+ * Confirmed live: a job gets its `queue_entry_id` as soon as the run reaches
+ * `dispatching` — well before `sliced_library_file_id` is set on the run
+ * itself, and well before the run is `completed`. That queue entry is
+ * created wanting to auto-start the moment a printer is free — Bambuddy has
+ * no pipeline-level or instance-level setting to make it wait for a person
+ * instead, so `secureQueueEntries` (bambuddy-sync.ts) has to PATCH
+ * `manual_start: true` onto it directly, as early as it can.
+ */
+export type PipelineJob = {
+  id: number;
+  queue_entry_id: number | null;
+  status: string;
+  error_message: string | null;
+};
+
 export type PipelineRun = {
   id: number;
   pipeline_id: number;
   status: PipelineRunStatus;
   sliced_library_file_id: number | null;
   error_message: string | null;
+  jobs: PipelineJob[];
 };
 
-export async function runSlicerPipeline(sourceLibraryFileId: number): Promise<PipelineRun> {
+export async function runSlicerPipeline(sourceLibraryFileId: number, copies = 1): Promise<PipelineRun> {
   return bambuddyFetch<PipelineRun>(`/api/v1/slicer-pipelines/${pipelineId()}/run`, {
     method: "POST",
-    body: JSON.stringify({ source_library_file_id: sourceLibraryFileId, copies: 1 }),
+    body: JSON.stringify({ source_library_file_id: sourceLibraryFileId, copies }),
   });
 }
 
@@ -207,11 +224,26 @@ export type QueueItem = {
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
+  /**
+   * Why a `pending` item hasn't auto-started even though it's eligible to —
+   * confirmed live: "File was sliced for A1, which is not compatible with
+   * [P2S]" for a MakerWorld 3MF that came with another printer's settings
+   * embedded (see the pipeline module's own note on `used_embedded_settings`).
+   * Worth showing the admin on a `Ready` ticket same as `error_message` is
+   * shown on a `Failed` one — it's the reason this one needs a human, not a
+   * failure.
+   */
+  waiting_reason: string | null;
 };
 
 /**
- * Always manual-start: this is the "ready to print" pile the printer owner
- * reviews and kicks off by hand, never auto-dispatched.
+ * Add an already-sliced file to the queue directly, `manual_start: true`.
+ *
+ * Not how a request from this app reaches the queue — a Slicer Pipeline run
+ * creates its own queue entry as part of dispatching (see `PipelineJob`),
+ * and that entry needs `setManualStart` after the fact, not this. Kept as a
+ * general-purpose wrapper for anything that queues a file directly, outside
+ * a pipeline run.
  */
 export async function addToQueue(slicedLibraryFileId: number): Promise<QueueItem> {
   return bambuddyFetch<QueueItem>("/api/v1/queue/", {
@@ -222,6 +254,22 @@ export async function addToQueue(slicedLibraryFileId: number): Promise<QueueItem
 
 export async function getQueueItem(itemId: number): Promise<QueueItem> {
   return bambuddyFetch<QueueItem>(`/api/v1/queue/${itemId}`);
+}
+
+/**
+ * Force manual-start on a queue entry.
+ *
+ * Confirmed live: refuses with a 400 ("Can only update pending items") once
+ * an item has left `pending` — which is fine, since by then it's either
+ * already been started by a person (the whole point) or is otherwise past
+ * the point this matters. Callers should treat that refusal as a no-op, not
+ * an error worth surfacing.
+ */
+export async function setManualStart(queueItemId: number): Promise<QueueItem> {
+  return bambuddyFetch<QueueItem>(`/api/v1/queue/${queueItemId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ manual_start: true }),
+  });
 }
 
 // ---------------------------------------------------------------------------
