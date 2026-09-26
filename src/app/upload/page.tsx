@@ -1,5 +1,7 @@
 import { printerName, requireUser } from "@/lib/authz";
 import { isPla, listSpools } from "@/lib/bambuddy";
+import { listActiveBenefits } from "@/lib/benefits";
+import { getSettings } from "@/lib/settings";
 import { AppHeader } from "@/components/app-header";
 import { Kicker, Notice } from "@/components/ui";
 import { UploadForm } from "./upload-form";
@@ -12,7 +14,10 @@ export default async function UploadPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const [{ error }, user] = await Promise.all([searchParams, requireUser("/upload")]);
-  const owner = await printerName();
+  const [owner, { tipJarEnabled }] = await Promise.all([printerName(), getSettings()]);
+  const benefits = tipJarEnabled
+    ? (await listActiveBenefits()).map((b) => ({ label: b.label, preferred: b.preferred }))
+    : null;
 
   // A live read, not cached data — the whole point of the colour picker is
   // that it can't drift from what's actually on the shelf. A Bambuddy hiccup
@@ -55,7 +60,7 @@ export default async function UploadPage({
           </div>
         )}
 
-        <UploadForm owner={owner} spools={spools} />
+        <UploadForm owner={owner} spools={spools} benefits={benefits} />
       </main>
     </>
   );

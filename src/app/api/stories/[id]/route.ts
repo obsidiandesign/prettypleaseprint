@@ -1,4 +1,4 @@
-import { ok, storyResource, withActor } from "@/lib/api";
+import { ok, storySerializer, withActor } from "@/lib/api";
 import { getStory, storyIdOr400, withdrawStory } from "@/lib/stories";
 
 /**
@@ -19,7 +19,8 @@ export const dynamic = "force-dynamic";
 
 export const GET = withActor<{ id: string }>(async (_request, actor, { id }) => {
   const story = await getStory(actor, storyIdOr400(id));
-  return ok(storyResource(story));
+  const toResource = await storySerializer();
+  return ok(toResource(story));
 });
 
 export const DELETE = withActor<{ id: string }>(async (_request, actor, { id }) => {

@@ -5,11 +5,13 @@ import "./_env";
  *   npm run verify:benefits
  *
  * Drives the real admin forms the way a JavaScript-off browser does, and the
- * real upload endpoint, asserting what a person observes: the DB row, what the
- * upload form shows, and what the server accepts. `src/lib/benefits.ts` is
+ * real intake endpoint, asserting what a person observes: the DB row, what the
+ * intake form and the board show, and what the server accepts. Also the tip
+ * jar's on/off switch (src/lib/settings.ts), which gates all of it. `src/lib/benefits.ts` is
  * `server-only` so it cannot be imported here — everything goes through HTTP.
  *
- * DESTRUCTIVE: wipes users, stories and benefits. Development database only.
+ * DESTRUCTIVE: wipes users, stories, benefits and settings. Development
+ * database only.
  */
 import { db } from "../src/lib/db";
 import { ensureCredentials, signInWithPassword, usernameFor } from "./_accounts";
@@ -24,6 +26,17 @@ function check(name: string, ok: boolean, detail = "") {
 }
 const section = (t: string) =>
   console.info(`\n── ${t} ${"─".repeat(Math.max(0, 54 - t.length))}`);
+
+/** React SSR puts `<!-- -->` between static text and an interpolation. */
+const rendered = (html: string) => html.replace(/<!--\s*-->/g, "");
+
+/**
+ * The markup a person sees, without the `<script>` payloads. `next dev` ships
+ * every server component's props in its debug info — the whole story row,
+ * tip included — which a production build does not, so asserting on the raw
+ * page would fail in dev for a value nobody can see.
+ */
+const visible = (html: string) => rendered(html).replace(/<script\b[\s\S]*?<\/script>/g, "");
 
 const unescapeHtml = (s: string) =>
   s.replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'")
@@ -98,6 +111,7 @@ async function main() {
   await db.notification.deleteMany();
   await db.story.deleteMany();
   await db.benefit.deleteMany();
+  await db.appSettings.deleteMany(); // no row: the defaults, tip jar off
   await db.verification.deleteMany();
   await db.session.deleteMany();
   await db.invite.deleteMany();
@@ -169,18 +183,75 @@ async function main() {
         (await db.benefit.findUnique({ where: { id: beer!.id } }))?.active === true);
 
   // ------------------------------------------------------------------
-  // The tip jar doesn't fit a link-first, family-facing intake form the way
-  // it fit an office upload form — see the note where Story.tip's schema
-  // comment lives. It's deliberately not wired into src/app/upload/upload-
-  // form.tsx while it's decided whether/how to repurpose it, so what's worth
-  // asserting here is that absence, not a validation path that no longer
-  // exists (there is no more "the server decides the tip" — CreateStorySchema
-  // has no tip field at all).
-  section("the tip jar is not offered on the new intake form");
-  const uploadPage = await (await client.go(`${APP}/upload`)).text();
-  check("the intake form does not render the benefit catalogue",
-        !uploadPage.includes("A big pizza") && !uploadPage.includes("currently prefers"),
-        "a tip-jar section reappeared on /upload — repurposed on purpose, or a stale import?");
+  // A ticket that offered a tip, to watch it appear and disappear.
+  const tipped = await db.story.create({
+    data: {
+      title: "Tipped order", uploaderId: ayla.id, colorName: "Slate", colorHex: "#4a5d78",
+      tip: "A beer", material: "PLA", quantity: 1, note: "",
+      modelUrl: "https://makerworld.com/en/models/000000-tipped-fixture",
+    },
+  });
+  const apiTip = async (b: Browser) =>
+    ((await (await b.go(`${APP}/api/stories/${tipped.id}`)).json()) as { tip?: string }).tip;
+  // Every field valid except, possibly, the tip — and spoolId names no real
+  // spool, so a request that gets past the tip check stops at Bambuddy.
+  const file = (b: Browser, tip: string) =>
+    b.raw(`${APP}/api/stories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Tip check", modelUrl: "https://makerworld.com/en/models/123456", spoolId: 999999,
+        quantity: 1, tip,
+      }),
+    });
+
+  section("the tip jar starts off, and off hides it everywhere");
+  let uploadPage = rendered(await (await client.go(`${APP}/upload`)).text());
+  check("the intake form asks for no tip",
+        !uploadPage.includes('name="tip"') && !uploadPage.includes("currently prefers"));
+  const board = visible(await (await client.go(`${APP}/board`)).text());
+  const at = board.indexOf("A beer");
+  check("the board shows no tip on the ticket", at < 0, board.slice(Math.max(0, at - 300), at + 60));
+  check("the profile shows no beer count",
+        !rendered(await (await client.go(`${APP}/me`)).text()).includes("Beers owed"));
+  check("the API sends the tip as empty", (await apiTip(client)) === "", `got ${JSON.stringify(await apiTip(client))}`);
+  check("the stored tip is kept", (await db.story.findUnique({ where: { id: tipped.id } }))?.tip === "A beer");
+  const ignored = await file(client, "Not on any list");
+  const ignoredBody = await ignored.text();
+  // Past the tip check, the next stop is Bambuddy's spool list: a 503 with no
+  // Bambuddy configured, or a 409 for the made-up spool with one. Either way
+  // the tip was not what answered.
+  check("a posted tip is ignored, not refused",
+        (ignored.status === 503 || ignored.status === 409) && !ignoredBody.includes("tip"),
+        `${ignored.status} ${ignoredBody}`);
+
+  section("the owner turns it on");
+  page = await (await ruben.go(`${APP}/admin/benefits`)).text();
+  await ruben.submit(`${APP}/admin/benefits`, page, findForm(page, ['name="enabled"', 'value="true"']), {});
+  check("the switch is stored", (await db.appSettings.findUnique({ where: { id: 1 } }))?.tipJarEnabled === true);
+  check("turning it on is audited", (await db.auditEvent.count({ where: { action: "tipjar.enabled" } })) === 1);
+
+  uploadPage = rendered(await (await client.go(`${APP}/upload`)).text());
+  check("the intake form offers the active benefits",
+        uploadPage.includes('name="tip"') && uploadPage.includes("A big pizza") && uploadPage.includes("A coffee"));
+  check("and stars the preferred one", uploadPage.includes("currently prefers: A big pizza"));
+  check("the board shows the tip",
+        visible(await (await client.go(`${APP}/board`)).text()).includes("A beer"));
+  check("the profile shows the beer count",
+        rendered(await (await client.go(`${APP}/me`)).text()).includes("Beers owed"));
+  check("the API sends the tip", (await apiTip(client)) === "A beer");
+  const refused = await file(client, "Not on any list");
+  const refusedBody = await refused.text();
+  check("a tip that is not an active benefit is refused",
+        refused.status === 400 && refusedBody.includes("tip"), `${refused.status} ${refusedBody}`);
+
+  section("and off again");
+  page = await (await ruben.go(`${APP}/admin/benefits`)).text();
+  await ruben.submit(`${APP}/admin/benefits`, page, findForm(page, ['name="enabled"', 'value="false"']), {});
+  check("the switch is stored", (await db.appSettings.findUnique({ where: { id: 1 } }))?.tipJarEnabled === false);
+  check("turning it off is audited", (await db.auditEvent.count({ where: { action: "tipjar.disabled" } })) === 1);
+  check("the form stops asking",
+        !rendered(await (await client.go(`${APP}/upload`)).text()).includes('name="tip"'));
 
   // ------------------------------------------------------------------
   section("history keeps the tip it was made with");
@@ -197,6 +268,7 @@ async function main() {
 
   // ------------------------------------------------------------------
   section("teardown — restore the default benefits");
+  await db.appSettings.deleteMany();
   await db.benefit.deleteMany();
   const defaults = ["A beer", "A coffee", "A spool of filament", "Nerd stuff", "Nothing, sorry"];
   await db.benefit.createMany({ data: defaults.map((label, i) => ({ label, sortOrder: i + 1 })) });

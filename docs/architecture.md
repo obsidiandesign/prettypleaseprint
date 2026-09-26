@@ -42,9 +42,8 @@ clicking.
   refuses anything else, because the API takes any spool id.
 - Quantity, a needed-by date and a free-text note, as before.
 
-The tip jar is not on the form. The `Benefit` catalogue and `/admin/benefits`
-still exist and `Story.tip` defaults quietly, pending a decision on whether
-tips belong in the new flow.
+A tip, if the owner has the tip jar switched on — see
+[The tip jar, as a switch](#the-tip-jar-as-a-switch).
 
 ### The handoff
 
@@ -301,15 +300,35 @@ side:
   date, with the re-queue control on each row.
 - **The benefits (tips) are owner-managed data**, not a constant: a `Benefit`
   table the owner edits at `/admin/benefits`, seeded with the original five.
-  `Story.tip` stays a plain string so a past request survives an edit. The new
-  intake form does not ask for a tip, so for now the catalogue has no caller
-  on the request side.
+  `Story.tip` stays a plain string so a past request survives an edit.
 - **A feature request's priority is editable in any status, and both `/frr`
   views filter** by priority/status/category. The filter is ANDed onto
   `featureScope`, so it can only ever narrow a caller's own set.
 - **An optional free-text note** rides along on a request and shows on the
   ticket for the owner. Slicer settings themselves belong to the pipeline in
   Bambuddy, not to the request.
+
+## The tip jar, as a switch
+
+Tips came from an office setting ("what's in it for you — a beer?"), and they
+do not suit every deployment. So the tip jar is a module the owner turns on or
+off at `/admin/benefits`, and it starts **off**.
+
+- **The switch is data, not configuration.** One row in `app_settings`
+  (`src/lib/settings.ts`), flipped from the admin page, audited as
+  `tipjar.enabled` / `tipjar.disabled`. An env var would have meant a restart
+  to change it; this is the owner's call, not the deployer's. A missing row
+  reads as the defaults, so nothing seeds it.
+- **Off means off everywhere.** The intake form asks for nothing, the board
+  shows no tip pill, `/me` loses the beer count, and the API sends `tip` as
+  `""`. The stored `Story.tip` values are kept, so turning it back on restores
+  them.
+- **On, the catalogue is authoritative.** A posted tip must be the label of an
+  active benefit, checked in `createStoryFromLink` before Bambuddy is asked
+  anything. Off, a posted tip is ignored rather than refused, so a script
+  written while it was on keeps working.
+- **The catalogue stays editable while it is off**, so the owner can set the
+  list up before anyone sees it.
 
 ## What is deliberately not built
 
@@ -348,13 +367,14 @@ src/lib/
   audit.ts               the append-only trail
   bambuddy.ts            the Bambuddy client — resolve, import, slice, queue, spools
   bambuddy-sync.ts       intake handoff and status sync; nothing here takes an Actor
-  catalog.ts             quantity presets and the seed tips
+  catalog.ts             quantity presets and shared formatting
   stories.ts             every operation on a ticket — the rules, once
   notifications.ts       the Activity feed, scoped by recipient
   api.ts                 the JSON boundary: 401/403, Origin, wire format
   openapi.ts             the OpenAPI 3.1 document, app half + Better Auth half
   features.ts            every operation on a feature request — the 'frr' track
   benefits.ts            the owner-managed benefits (tip) catalogue
+  settings.ts            instance-wide switches, one row — the tip jar
 src/app/
   board/                 the kanban backlog, scoped per role
   upload/                the intake form: link, live spool picker, wish
@@ -375,10 +395,10 @@ scripts/
   verify-passkey.ts      WebAuthn in a real browser
   verify-api.ts          the JSON API, the document and the console
   verify-frr.ts          the feature-request track, filed and triaged
-  verify-benefits.ts     the owner-managed benefits catalogue
+  verify-benefits.ts     the benefits catalogue and the tip jar switch
   security-probe.ts      OWASP-mapped security probes
 src/app/admin/
   invites/               the guest list
-  benefits/              the benefits catalogue (admin only)
+  benefits/              the tip jar switch and its catalogue (admin only)
   audit/                 the audit log, admin only
 ```

@@ -268,11 +268,9 @@ model Story {
   neededBy DateTime?
   note     String    @default("")
 
-  /// The office "tip jar" (see src/lib/benefits.ts) doesn't fit a family
-  /// request app as-is — left here, defaulted, rather than deleted, so the
-  /// existing Benefit catalog and admin page keep compiling while it's
-  /// decided whether/how to repurpose this for the new intake flow. The new
-  /// form does not collect it.
+  /// The benefit offered, as its label at the time — the optional tip jar
+  /// (`AppSettings.tipJarEnabled`, src/lib/benefits.ts). Empty when the jar
+  /// was off or nothing was offered. Kept while the jar is off, just not shown.
   tip String @default("")
 
   /// The pasted MakerWorld model link — this
@@ -446,4 +444,23 @@ model Benefit {
 
   @@index([active, sortOrder])
   @@map("benefit")
+}
+
+/// Instance-wide switches the printer owner flips at runtime, as one row
+/// (`id` is always 1). A typed column per switch rather than a key/value bag,
+/// so a missing or misspelt setting is a compile error, not a silent default.
+///
+/// A missing row reads as every default — see `getSettings` in
+/// src/lib/settings.ts — so nothing has to seed it.
+model AppSettings {
+  id Int @id @default(1)
+
+  /// The tip jar: requesters offer a benefit from the `Benefit` catalogue,
+  /// and tips show on tickets and on /me. Off hides all of that; stored
+  /// `Story.tip` values are kept, so turning it back on restores them.
+  tipJarEnabled Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("app_settings")
 }

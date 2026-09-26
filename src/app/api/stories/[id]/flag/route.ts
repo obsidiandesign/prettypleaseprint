@@ -1,4 +1,4 @@
-import { jsonBody, ok, storyResource, withActor } from "@/lib/api";
+import { jsonBody, ok, storySerializer, withActor } from "@/lib/api";
 import { clearFlag, flagStory, getStory, storyIdOr400 } from "@/lib/stories";
 
 /**
@@ -21,8 +21,9 @@ export const POST = withActor<{ id: string }>(
     const storyId = storyIdOr400(id);
     const body = await jsonBody(request);
     const done = await flagStory(actor, storyId, body.reason);
+    const toResource = await storySerializer();
     return ok({
-      story: storyResource(await getStory(actor, storyId)),
+      story: toResource(await getStory(actor, storyId)),
       reason: done.reason,
       notified: done.uploaderName,
     });
@@ -34,8 +35,9 @@ export const DELETE = withActor<{ id: string }>(
   async (_request, actor, { id }) => {
     const storyId = storyIdOr400(id);
     const done = await clearFlag(actor, storyId);
+    const toResource = await storySerializer();
     return ok({
-      story: storyResource(await getStory(actor, storyId)),
+      story: toResource(await getStory(actor, storyId)),
       notified: done.uploaderName,
     });
   },

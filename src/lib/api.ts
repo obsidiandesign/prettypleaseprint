@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/authz";
 import { storyRef, type Actor } from "@/lib/scope";
 import { StoryProblem, type CommentRow, type StoryRow } from "@/lib/stories";
+import { getSettings } from "@/lib/settings";
 import type { Prisma } from "@prisma/client";
 
 /**
@@ -165,7 +166,12 @@ export async function jsonBody(request: Request): Promise<Record<string, unknown
  * example now: they are sync plumbing, not this API's business — `status`
  * and `errorMessage` are what a caller needs.
  */
-export function storyResource(story: StoryRow) {
+/**
+ * `tipJar` is the tip jar's switch (src/lib/settings.ts). Off, `tip` goes out
+ * as `""`, the same as a ticket that offered nothing: the field keeps its type,
+ * and the stored value is not lost, just not shown.
+ */
+export function storyResource(story: StoryRow, { tipJar }: { tipJar: boolean }) {
   return {
     id: story.id,
     ref: storyRef(story.id),
@@ -181,7 +187,7 @@ export function storyResource(story: StoryRow) {
     },
     material: story.material,
     color: { name: story.colorName, hex: story.colorHex },
-    tip: story.tip,
+    tip: tipJar ? story.tip : "",
     note: story.note,
     errorMessage: story.errorMessage,
     uploader: {
@@ -193,6 +199,15 @@ export function storyResource(story: StoryRow) {
     createdAt: story.createdAt.toISOString(),
     updatedAt: story.updatedAt.toISOString(),
   };
+}
+
+/**
+ * `storyResource` bound to the tip jar's current switch, read once — so a
+ * list of a hundred tickets is one settings query, not a hundred.
+ */
+export async function storySerializer() {
+  const { tipJarEnabled } = await getSettings();
+  return (story: StoryRow) => storyResource(story, { tipJar: tipJarEnabled });
 }
 
 export function commentResource(comment: CommentRow) {

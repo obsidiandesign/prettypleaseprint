@@ -58,9 +58,10 @@ that: there is no multi-tenancy, no billing, and no queue theory.
   job.
 - **Talk on the ticket** — a conversation thread per request, so "can you do it
   in teal" lives with the model rather than in a chat app.
-- **Owner-managed benefits** — the "what's in it for you" tips are the printer
-  owner's to define at `/admin/benefits`. The new intake form does not ask for
-  one yet; past requests keep theirs.
+- **An optional tip jar** — the printer owner can switch on "what's in it for
+  you": requesters offer a tip from a list the owner defines at
+  `/admin/benefits`, with the owner's favourites starred. Off by default. Off
+  hides tips everywhere, and turning it back on brings past tips back.
 - **Revoke access when someone leaves** — suspends the account, signs them out
   everywhere and refuses new sign-ins, while keeping their tickets, comments
   and history. Reversible, and audited.

@@ -1,4 +1,4 @@
-import { ok, storyResource, withActor } from "@/lib/api";
+import { ok, storySerializer, withActor } from "@/lib/api";
 import { declineStory, getStory, storyIdOr400 } from "@/lib/stories";
 
 /**
@@ -13,8 +13,9 @@ export const POST = withActor<{ id: string }>(
   async (_request, actor, { id }) => {
     const storyId = storyIdOr400(id);
     const done = await declineStory(actor, storyId);
+    const toResource = await storySerializer();
     return ok({
-      story: storyResource(await getStory(actor, storyId)),
+      story: toResource(await getStory(actor, storyId)),
       moved: { from: done.from, to: done.to },
       notified: done.uploaderName,
     });

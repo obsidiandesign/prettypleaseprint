@@ -2,7 +2,6 @@ import "server-only";
 import { z } from "zod";
 
 import { auth } from "@/lib/auth";
-import { TIPS } from "@/lib/catalog";
 import { ALL_STATUSES } from "@/lib/scope";
 import { BodySchema, CreateStorySchema, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, ReasonSchema } from "@/lib/stories";
 import { NOTIFICATION_LIMIT_MAX } from "@/lib/notifications";
@@ -123,7 +122,14 @@ const STORY_SCHEMA = {
         hex: { type: ["string", "null"], examples: ["EBF1E0FF"] },
       },
     },
-    tip: { type: "string", enum: [...TIPS] },
+    tip: {
+      type: "string",
+      description:
+        "The benefit offered, as its label when the request was made. `\"\"` when " +
+        "nothing was offered, and always `\"\"` while the printer owner has the " +
+        "tip jar switched off — the stored value is kept, not shown.",
+      examples: ["A beer"],
+    },
     note: { type: "string" },
     errorMessage: {
       type: ["string", "null"],
@@ -471,7 +477,10 @@ export async function buildOpenApiDocument() {
             "response already shows `status: \"Slicing\"` or even `\"Ready\"`. " +
             "A Bambuddy hiccup doesn't fail this call: the ticket is still " +
             "created as `Requested` with `errorMessage` set, and a background " +
-            "sync retries it (see src/lib/bambuddy-sync.ts).",
+            "sync retries it (see src/lib/bambuddy-sync.ts).\n\n" +
+            "`tip` is optional, and only means something while the printer " +
+            "owner has the tip jar on: then it must be the label of an active " +
+            "benefit (`400` otherwise). With the jar off it is ignored.",
           requestBody: {
             required: true,
             content: {
@@ -488,7 +497,7 @@ export async function buildOpenApiDocument() {
           },
           responses: {
             "201": storyResponse("Filed."),
-            "400": errorResponse("A field was missing or did not parse, the link isn't a MakerWorld model page, or the spool isn't PLA."),
+            "400": errorResponse("A field was missing or did not parse, the link isn't a MakerWorld model page, the spool isn't PLA, or the tip isn't an active benefit."),
             "409": errorResponse("That spoolId isn't in Bambuddy's live inventory any more."),
             "503": errorResponse("Bambuddy's inventory couldn't be reached to check the spool. Retry later."),
             ...COMMON_ERRORS,

@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/authz";
 import { listAllBenefits } from "@/lib/benefits";
+import { getSettings } from "@/lib/settings";
 import { AppHeader } from "@/components/app-header";
 import { Kicker, Notice } from "@/components/ui";
 import { Toast } from "@/components/toast";
@@ -8,6 +9,7 @@ import {
   renameBenefitAction,
   setActiveAction,
   setPreferredAction,
+  setTipJarAction,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +28,7 @@ export default async function BenefitsPage({
   searchParams: Promise<{ toast?: string; error?: string }>;
 }) {
   const [{ toast, error }, admin] = await Promise.all([searchParams, requireAdmin()]);
-  const benefits = await listAllBenefits();
+  const [benefits, { tipJarEnabled }] = await Promise.all([listAllBenefits(), getSettings()]);
 
   const live = benefits.filter((b) => b.active);
   const retired = benefits.filter((b) => !b.active);
@@ -46,6 +48,35 @@ export default async function BenefitsPage({
           what you actually want. Retire one to take it off the list without
           touching past requests that offered it.
         </p>
+
+        {/* The switch. The list below stays editable either way, so it can be
+            set up before anyone sees it. */}
+        <form
+          action={setTipJarAction}
+          className={`mb-[26.4px] flex flex-wrap items-center justify-between gap-[13.2px] rounded-panel border-[3px] border-ink p-[17.6px] shadow-stamp ${
+            tipJarEnabled ? "bg-mint-wash" : "bg-cream-2"
+          }`}
+        >
+          <input type="hidden" name="enabled" value={tipJarEnabled ? "false" : "true"} />
+          <div className="flex-[1_1_300px]">
+            <p className="m-0 mb-[4px] font-mono text-[12px] font-bold uppercase tracking-[0.1em] text-ink-2">
+              Tip jar · {tipJarEnabled ? "on" : "off"}
+            </p>
+            <p className="m-0 text-[14.5px] text-ink-2">
+              {tipJarEnabled
+                ? "People can offer one of these when they ask for a print, and tips show on the board and in the profile."
+                : "Nobody is asked for a tip, and tips are hidden everywhere. Past tips are kept and come back if you turn it on."}
+            </p>
+          </div>
+          <button
+            type="submit"
+            className={`stamp cursor-pointer rounded-chip border-[3px] border-ink px-[20px] py-[10px] text-[14px] font-bold ${
+              tipJarEnabled ? "bg-porcelain text-ink hover:bg-sun" : "bg-cherry-dk text-cream hover:bg-cherry"
+            }`}
+          >
+            {tipJarEnabled ? "Turn it off" : "Turn it on"}
+          </button>
+        </form>
 
         {error && (
           <div className="mb-[17.6px]">

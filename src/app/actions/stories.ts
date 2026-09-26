@@ -92,6 +92,7 @@ export async function createStory(formData: FormData): Promise<void> {
     quantity: formData.get("quantity"),
     note: formData.get("note") ?? undefined,
     neededBy: typeof neededByRaw === "string" && neededByRaw ? neededByRaw : undefined,
+    tip: formData.get("tip") || undefined,
   });
   if (!parsed.success) {
     const issue = parsed.error.issues[0];

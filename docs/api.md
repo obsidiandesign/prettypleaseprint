@@ -128,6 +128,11 @@ curl -s https://print.example/api/stories \
        "spoolId":7,"quantity":2,"note":"No rush"}'
 ```
 
+`tip` is optional and only counts while the printer owner has the tip jar
+switched on: then it must be the label of an active benefit, or you get `400`.
+While the jar is off it is ignored, and every ticket's `tip` comes back as
+`""`.
+
 There is no endpoint that lists spools yet, so a script has to know the
 Bambuddy spool id it wants; the upload form is where the live list is shown.
 

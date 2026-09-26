@@ -17,6 +17,8 @@ export type CardStory = Story & { uploader: Pick<User, "name" | "initials"> };
  *
  * `showUploader` carries the authorisation rule into the design: a client only
  * ever sees their own tickets, so their name on every one would be noise.
+ * `showTip` is the tip jar's switch (src/lib/settings.ts): off, a stored tip
+ * stays in the row but not on the ticket.
  */
 /** A story's colour has no stock swatch until a spool has been picked. */
 const NO_COLOR = "#b6bcc2";
@@ -24,10 +26,12 @@ const NO_COLOR = "#b6bcc2";
 export function StoryCard({
   story,
   showUploader,
+  showTip,
   compact = false,
 }: {
   story: CardStory;
   showUploader: boolean;
+  showTip: boolean;
   compact?: boolean;
 }) {
   const printing = story.status === "Printing";
@@ -82,7 +86,7 @@ export function StoryCard({
             />
             {story.material ?? story.colorName}
           </span>
-          {story.tip && (
+          {showTip && story.tip && (
             <span className="rounded-chip border-2 border-ink bg-aqua-wash px-[9px] py-[2px] font-mono text-[11px] font-bold uppercase tracking-[0.05em] text-ink">
               {story.tip}
             </span>

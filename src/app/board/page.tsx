@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { db } from "@/lib/db";
 import { requireUser, storyScope, printerName, BOARD } from "@/lib/authz";
+import { getSettings } from "@/lib/settings";
 import { AppHeader } from "@/components/app-header";
 import { StoryCard, type CardStory } from "@/components/story-card";
 import { Kicker } from "@/components/ui";
@@ -38,7 +39,7 @@ export default async function BoardPage({
   searchParams: Promise<{ sent?: string; toast?: string }>;
 }) {
   const [{ sent, toast }, user] = await Promise.all([searchParams, requireUser("/board")]);
-  const owner = await printerName();
+  const [owner, { tipJarEnabled }] = await Promise.all([printerName(), getSettings()]);
 
   // The authorisation rule, composed into the query rather than filtered
   // afterwards: a client's own stories never leave the database.
@@ -112,7 +113,7 @@ export default async function BoardPage({
                       </p>
                     ) : (
                       column.map((story) => (
-                        <StoryCard key={story.id} story={story} showUploader={isAdmin} />
+                        <StoryCard key={story.id} story={story} showUploader={isAdmin} showTip={tipJarEnabled} />
                       ))
                     )}
                   </div>

@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 
 import { requireAdmin } from "@/lib/authz";
 import { BenefitProblem, createBenefit, updateBenefit } from "@/lib/benefits";
+import { SettingsProblem, setTipJarEnabled } from "@/lib/settings";
 
 /**
  * The owner's controls for the benefits catalogue, as plain server-action
@@ -14,6 +15,18 @@ import { BenefitProblem, createBenefit, updateBenefit } from "@/lib/benefits";
 
 function back(params: Record<string, string>): never {
   redirect(`/admin/benefits?${new URLSearchParams(params).toString()}`);
+}
+
+export async function setTipJarAction(formData: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const enabled = formData.get("enabled") === "true";
+  try {
+    await setTipJarEnabled(admin, enabled);
+    back({ toast: enabled ? "Tip jar is on" : "Tip jar is off" });
+  } catch (error) {
+    if (error instanceof SettingsProblem) back({ error: error.message });
+    throw error;
+  }
 }
 
 export async function createBenefitAction(formData: FormData): Promise<void> {

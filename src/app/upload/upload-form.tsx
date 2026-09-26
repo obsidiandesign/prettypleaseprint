@@ -13,6 +13,9 @@ export type Spool = {
   rgba: string | null;
 };
 
+/** One owner-managed tip option, passed from the server (see upload/page.tsx). */
+export type Benefit = { label: string; preferred: boolean };
+
 /** Segmented control. Handoff §3: track #eaecee, 3px inset, 6px options. */
 function Segmented<T extends string | number>({
   options,
@@ -55,7 +58,20 @@ function swatchColor(rgba: string | null): string {
   return rgba ? `#${rgba.replace(/^#/, "")}` : "#b6bcc2";
 }
 
-export function UploadForm({ owner, spools }: { owner: string; spools: Spool[] }) {
+export function UploadForm({
+  owner,
+  spools,
+  benefits,
+}: {
+  owner: string;
+  spools: Spool[];
+  /** The tip jar's options, or `null` when the owner has it switched off. */
+  benefits: Benefit[] | null;
+}) {
+  // Default to a preferred benefit if the owner has marked one, else the first
+  // on the list, else none.
+  const preferredLabels = (benefits ?? []).filter((b) => b.preferred).map((b) => b.label);
+  const [tip, setTip] = useState(preferredLabels[0] ?? benefits?.[0]?.label ?? "");
   const [quantity, setQuantity] = useState(1);
   const [spoolId, setSpoolId] = useState<number | "">(spools[0]?.id ?? "");
   const [submitting, setSubmitting] = useState(false);
@@ -190,6 +206,51 @@ export function UploadForm({ owner, spools }: { owner: string; spools: Spool[] }
           className="w-full resize-y rounded-card border-[3px] border-ink bg-porcelain px-[15px] py-[12px] text-[16px] text-ink placeholder:text-ink-3"
         />
       </div>
+
+      {/* ---- the tip jar, when the owner has it on ---- */}
+      {benefits && benefits.length > 0 && (
+        <section
+          aria-labelledby="tip-heading"
+          className="mt-[26.4px] rounded-panel border-[3px] border-ink bg-aqua-wash p-[22px] shadow-stamp"
+        >
+          <h2 id="tip-heading" className="m-0 mb-[4px] font-display text-[22px] text-ink">
+            And what&rsquo;s in it for {owner}?
+          </h2>
+          <p className="m-0 mb-[8px] text-[14.5px] text-ink-2">
+            Optional. Nobody is counting. {owner} is counting a little.
+          </p>
+          {preferredLabels.length > 0 && (
+            <p className="m-0 mb-[15px] font-mono text-[12px] font-bold uppercase tracking-[0.04em] text-cherry-dk">
+              ★ {owner} currently prefers: {preferredLabels.join(", ")}
+            </p>
+          )}
+          <div role="radiogroup" aria-labelledby="tip-heading" className="flex flex-wrap gap-[8.8px]">
+            {benefits.map((b) => {
+              const active = b.label === tip;
+              return (
+                <button
+                  key={b.label}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setTip(active ? "" : b.label)}
+                  className={`stamp cursor-pointer rounded-chip border-[3px] border-ink px-[18px] py-[9px] text-[14px] font-bold transition-colors ${
+                    active ? "bg-cherry-dk text-cream" : "bg-porcelain text-ink hover:bg-sun"
+                  }`}
+                >
+                  {b.preferred && (
+                    <span aria-label="preferred" title="Preferred">
+                      ★{" "}
+                    </span>
+                  )}
+                  {b.label}
+                </button>
+              );
+            })}
+          </div>
+          <input type="hidden" name="tip" value={tip} />
+        </section>
+      )}
 
       {/* ---- actions ---- */}
       <div className="mt-[26.4px] flex flex-wrap items-center gap-[13.2px]">

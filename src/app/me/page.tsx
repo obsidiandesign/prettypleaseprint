@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { db } from "@/lib/db";
 import { printerName, requireUser, storyScope } from "@/lib/authz";
+import { getSettings } from "@/lib/settings";
 import { storyRef } from "@/lib/scope";
 import { relativeTime } from "@/lib/catalog";
 import { AppHeader } from "@/components/app-header";
@@ -32,7 +33,7 @@ type Card = { value: string; label: string; skin: string };
 
 export default async function ProfilePage() {
   const user = await requireUser("/me");
-  const owner = await printerName();
+  const [owner, { tipJarEnabled }] = await Promise.all([printerName(), getSettings()]);
   const isAdmin = user.role === "admin";
   const scope = storyScope(user);
 
@@ -61,17 +62,21 @@ export default async function ProfilePage() {
   const inHand = stories.filter((s) => s.status === "Done").length;
   const usual = favourite[0]?.material ?? "—";
 
+  // The beer count belongs to the tip jar, and goes when it is switched off.
+  const beerCard = (label: string, skin: string): Card[] =>
+    tipJarEnabled ? [{ value: String(beers), label, skin }] : [];
+
   const cards: Card[] = isAdmin
     ? [
         { value: String(finished), label: "Printed for the group", skin: "bg-aqua" },
         { value: String(ready), label: "Ready to print", skin: "bg-mint-wash" },
         { value: String(needsAttention), label: "Need a look", skin: "bg-cherry-wash" },
-        { value: String(beers), label: "Beers owed to you", skin: "bg-mint" },
+        ...beerCard("Beers owed to you", "bg-mint"),
       ]
     : [
         { value: String(stories.length), label: "Requests made", skin: "bg-aqua" },
         { value: String(inHand), label: "In your hands", skin: "bg-mint" },
-        { value: String(beers), label: `Beers owed to ${owner}`, skin: "bg-sun" },
+        ...beerCard(`Beers owed to ${owner}`, "bg-sun"),
         { value: usual, label: "Your usual material", skin: "bg-cream-2" },
       ];
 

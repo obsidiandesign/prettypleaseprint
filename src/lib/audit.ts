@@ -47,6 +47,8 @@ export type AuditAction =
   // benefits (the owner-managed tip catalogue)
   | "benefit.created"
   | "benefit.updated"
+  | "tipjar.enabled"
+  | "tipjar.disabled"
   // feature requests (the 'frr' track)
   | "feature.created"
   | "feature.status_changed"

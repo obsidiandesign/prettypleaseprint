@@ -15,8 +15,10 @@ import {
   type Actor,
 } from "@/lib/scope";
 import { isPla, listSpools } from "@/lib/bambuddy";
+import { activeBenefitLabels } from "@/lib/benefits";
 import { intakeNotRunning, processIntake } from "@/lib/bambuddy-sync";
 import { QuantitySchema } from "@/lib/catalog";
+import { getSettings } from "@/lib/settings";
 
 /**
  * Everything that can happen to a ticket, in one place.
@@ -147,6 +149,12 @@ export const CreateStorySchema = z.object({
   quantity: QuantitySchema,
   note: z.string().trim().max(2000, "That note is very long.").optional().default(""),
   neededBy: z.coerce.date().optional(),
+  /**
+   * A benefit label, when the tip jar is on. Checked against the active
+   * catalogue in `createStoryFromLink`, not here: the list is owner-managed
+   * data, and a schema cannot know what is on it today.
+   */
+  tip: z.string().trim().max(80).optional(),
 });
 
 export type CreateStoryInput = z.infer<typeof CreateStorySchema>;
@@ -538,6 +546,18 @@ export async function clearFlag(actor: Actor, id: number) {
  * (see src/lib/bambuddy-sync.ts) rather than making the requester resubmit.
  */
 export async function createStoryFromLink(actor: Actor, input: CreateStoryInput) {
+  // The tip jar is optional (src/lib/settings.ts). Off, a posted tip is
+  // ignored rather than refused, so a script written while it was on keeps
+  // working. On, the tip must be on the active list — the catalogue, not the
+  // form, is authoritative. Checked before Bambuddy is asked anything.
+  let tip = "";
+  if ((await getSettings()).tipJarEnabled && input.tip) {
+    if (!(await activeBenefitLabels()).includes(input.tip)) {
+      throw problem(400, "That tip isn't on the list any more — pick another.");
+    }
+    tip = input.tip;
+  }
+
   let spools;
   try {
     spools = await listSpools();
@@ -569,6 +589,7 @@ export async function createStoryFromLink(actor: Actor, input: CreateStoryInput)
       material: spool.material,
       colorName: spool.color_name ?? "Unnamed",
       colorHex: spool.rgba,
+      tip,
     },
     select: { id: true, title: true },
   });

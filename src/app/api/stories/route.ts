@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { jsonBody, ok, storyResource, withActor } from "@/lib/api";
+import { jsonBody, ok, storySerializer, withActor } from "@/lib/api";
 import {
   CreateStorySchema,
   LIST_LIMIT_DEFAULT,
@@ -67,8 +67,9 @@ export const GET = withActor(async (request, actor) => {
     before: parsed.data.before,
   });
 
+  const toResource = await storySerializer();
   return ok({
-    stories: stories.map(storyResource),
+    stories: stories.map(toResource),
     // Null on the last page. Feed it back as `?before=` for the next one.
     nextCursor,
   });
@@ -87,5 +88,6 @@ export const POST = withActor(async (request, actor) => {
   }
 
   const created = await createStoryFromLink(actor, parsed.data);
-  return ok({ story: storyResource(await getStory(actor, created.id)) }, 201);
+  const toResource = await storySerializer();
+  return ok({ story: toResource(await getStory(actor, created.id)) }, 201);
 });

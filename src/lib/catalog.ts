@@ -2,23 +2,10 @@
  * Choices a request is made from that Bambuddy's own live state doesn't
  * already answer — material and colour used to live here as a fixed list,
  * but the intake form reads those from `listSpools()` (src/lib/bambuddy.ts)
- * now, since "what's actually in stock" is the whole point.
+ * now, since "what's actually in stock" is the whole point. Tips are
+ * owner-managed data (src/lib/benefits.ts), seeded by prisma/seed.ts.
  */
 import { z } from "zod";
-
-/**
- * The default tips, seeded into the `Benefit` table on first run. The live
- * list is owner-managed data (see `src/lib/benefits.ts`); this const is only
- * the seed default and a fallback, no longer the source of truth.
- */
-export const TIPS = [
-  "A beer",
-  "A coffee",
-  "A spool of filament",
-  "Nerd stuff",
-  "Nothing, sorry",
-] as const;
-export const DEFAULT_TIP = TIPS[0];
 
 /** Shortcut quantities. A typed number is accepted too — see `QuantitySchema`. */
 export const QUANTITY_PRESETS = [1, 2, 3, 4, 6] as const;

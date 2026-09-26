@@ -255,6 +255,16 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Changed
 
+- **The tip jar is an optional module, off by default.** A switch at the top of
+  `/admin/benefits` turns it on or off, stored in a new one-row `app_settings`
+  table and audited (`tipjar.enabled` / `tipjar.disabled`). On, the intake form
+  offers the active benefits with the owner's preferred ones starred, the
+  server checks a posted tip against that list, and tips show on the board, in
+  the API and as the beer count on `/me`. Off, all of that is hidden and a
+  posted tip is ignored; stored tips are kept, so turning it back on restores
+  them. Link intake had left the jar half-alive: the form stopped asking, but
+  old tips still showed and the beer count stopped moving.
+
 - **A request is a MakerWorld link, sliced and queued by Bambuddy.** File
   upload is gone: no `.stl`/`.3mf` validator, no object storage, no 3D viewer,
   no download and no "Open in PrusaSlicer". Instead the form takes a MakerWorld
