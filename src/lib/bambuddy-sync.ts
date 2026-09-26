@@ -98,9 +98,10 @@ const INTAKE_LEASE_MS = 10 * 60 * 1000;
 
 /**
  * Where-clause for "no `processIntake` is running on this story right now".
- * Decline and withdraw use it too (stories.ts): intake can't be recalled once
- * it has started a pipeline run — Bambuddy has no cancel — so they wait for
- * the claim instead of racing it.
+ * Decline and withdraw use it too (stories.ts): they wait for the claim
+ * rather than race intake, which would otherwise start a pipeline run for a
+ * story that no longer wants one. (Bambuddy can cancel a run, but refusing
+ * for the few seconds intake holds the claim is simpler and loses nothing.)
  */
 export function intakeNotRunning(now = new Date()): Prisma.StoryWhereInput {
   return {
@@ -109,6 +110,32 @@ export function intakeNotRunning(now = new Date()): Prisma.StoryWhereInput {
       { intakeStartedAt: { lt: new Date(now.getTime() - INTAKE_LEASE_MS) } },
     ],
   };
+}
+
+/**
+ * How long a `completed` run may go without any job carrying a queue entry
+ * before that's treated as final. Entries normally appear at `dispatching`,
+ * before the run completes, so this only has to cover a slow write on
+ * Bambuddy's side.
+ */
+const UNQUEUED_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * Why a run finished without ever reaching the print queue, or `null` if it
+ * hasn't (yet). Without this, `deriveStatus` reads such a run as `Slicing`
+ * forever and nobody is told.
+ */
+function unqueuedReason(run: PipelineRun): string | null {
+  if (run.status !== "completed") return null;
+  if (run.jobs.some((job) => job.queue_entry_id != null)) return null;
+  const completedAt = run.completed_at ? Date.parse(run.completed_at) : NaN;
+  if (!(Date.now() - completedAt > UNQUEUED_GRACE_MS)) return null;
+
+  const jobError = run.jobs.find((job) => job.error_message)?.error_message;
+  return (
+    jobError ??
+    "Bambuddy sliced this but never added it to the print queue — check the Slicer Pipeline's dispatch settings."
+  );
 }
 
 const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
@@ -403,6 +430,16 @@ export async function syncStory(storyId: number): Promise<void> {
       archiveId: item.archive_id,
       errorMessage: to === "Failed" ? item.error_message : item.waiting_reason,
     });
+    return;
+  }
+
+  const unqueued = unqueuedReason(run);
+  if (unqueued) {
+    await applyStatusChange(story, "Failed", {
+      slicedLibraryFileId: run.sliced_library_file_id,
+      errorMessage: unqueued,
+    });
+    await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — needs attention: ${unqueued}`, story.id);
     return;
   }
 

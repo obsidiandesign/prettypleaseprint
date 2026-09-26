@@ -488,8 +488,9 @@ export async function buildOpenApiDocument() {
           },
           responses: {
             "201": storyResponse("Filed."),
-            "400": errorResponse("A field was missing or did not parse."),
+            "400": errorResponse("A field was missing or did not parse, the link isn't a MakerWorld model page, or the spool isn't PLA."),
             "409": errorResponse("That spoolId isn't in Bambuddy's live inventory any more."),
+            "503": errorResponse("Bambuddy's inventory couldn't be reached to check the spool. Retry later."),
             ...COMMON_ERRORS,
           },
         },

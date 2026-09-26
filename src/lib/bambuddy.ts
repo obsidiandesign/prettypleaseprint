@@ -188,6 +188,7 @@ export type PipelineRun = {
   status: PipelineRunStatus;
   sliced_library_file_id: number | null;
   error_message: string | null;
+  completed_at: string | null;
   jobs: PipelineJob[];
 };
 
@@ -199,15 +200,19 @@ export async function runSlicerPipeline(sourceLibraryFileId: number, copies = 1)
 }
 
 /**
- * There is no GET for a single run, only a list per pipeline — filtering
- * client-side is fine at the volume one pipeline for one family sees. Worth
- * revisiting only if that list ever grows large enough for it to matter.
+ * One run by id, however old. `undefined` only when Bambuddy no longer has
+ * it (cleared from its run history).
+ *
+ * Not the per-pipeline `/runs` list: that is capped by `limit` (default 10),
+ * so a story whose run slipped past the newest few would stop syncing.
  */
 export async function getPipelineRun(runId: number): Promise<PipelineRun | undefined> {
-  const { runs } = await bambuddyFetch<{ runs: PipelineRun[] }>(
-    `/api/v1/slicer-pipelines/${pipelineId()}/runs?limit=50`,
-  );
-  return runs.find((run) => run.id === runId);
+  try {
+    return await bambuddyFetch<PipelineRun>(`/api/v1/pipeline-runs/${runId}`);
+  } catch (error) {
+    if (error instanceof BambuddyError && error.status === 404) return undefined;
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -538,7 +538,15 @@ export async function clearFlag(actor: Actor, id: number) {
  * (see src/lib/bambuddy-sync.ts) rather than making the requester resubmit.
  */
 export async function createStoryFromLink(actor: Actor, input: CreateStoryInput) {
-  const spools = await listSpools();
+  let spools;
+  try {
+    spools = await listSpools();
+  } catch (error) {
+    // Bambuddy unreachable. Not a bug in this request, so a refusal the form
+    // can show (and the API can answer 503) rather than a 500 page.
+    console.error("[intake] listSpools failed", error);
+    throw problem(503, "Can't reach the printer's inventory right now — try again in a minute.");
+  }
   const spool = spools.find((s) => s.id === input.spoolId);
   if (!spool) {
     throw problem(409, "That color isn't available any more — refresh and pick again.");
