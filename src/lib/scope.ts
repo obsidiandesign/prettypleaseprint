@@ -156,15 +156,16 @@ export function assertDecline(actor: Actor, from: StoryStatus): void {
 // into one generic helper: the print rules are load-bearing and exercised
 // directly by the suites, so the two stay legible and independently testable
 // rather than sharing a cleverness that a change to one could quietly bend for
-// the other. The *shape* is identical on purpose — forward-only, one step,
-// Done leaves the board, Declined terminal from Requested — so the owner
-// handles a feature request exactly as they handle a print.
+// the other. What they share: Done leaves the board, Declined is terminal and
+// only from Requested. What they don't: a print's status is derived from
+// Bambuddy (`deriveStatus`), while a feature request is stepped forward by the
+// owner, one stage at a time (`assertFeatureTransition`).
 // ---------------------------------------------------------------------------
 
 /**
- * A feature request's flow. Same shape as `FLOW`, feature-appropriate names.
- * `Shipped` is "released, go and check it"; `Done` is "closed and off the
- * board", the way `Delivery`/`Done` work for a print.
+ * A feature request's flow, stepped by the owner. `Shipped` is "released, go
+ * and check it"; `Done` is "closed and off the board", the way `Done` is for
+ * a print.
  */
 export const FEATURE_FLOW = [
   "Requested",

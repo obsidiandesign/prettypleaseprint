@@ -224,9 +224,9 @@ export async function createFeature(actor: Actor, input: unknown) {
 
 /**
  * The requester withdraws their own, while nobody has acted on it —
- * `Requested` or `Declined`. Mirrors withdrawing a print, minus the file:
- * there is nothing in object storage to remove. Comments and notifications
- * cascade at the database.
+ * `Requested` or `Declined`. Mirrors withdrawing a print, minus Bambuddy:
+ * nothing is held outside the database, so there is no intake to wait out.
+ * Comments and notifications cascade at the database.
  */
 export async function withdrawFeature(actor: Actor, id: number) {
   const feature = await db.featureRequest.findFirst({

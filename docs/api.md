@@ -95,8 +95,11 @@ nobody and confuse an honest client whose ticket is fine.
 Seeing every story is the widest scope in the app and it still does not include
 deleting somebody's request. And it only works before Bambuddy holds anything for it —
 `Requested` or `Declined`. Past that you get `409` and the name of the person
-to ask. So do decline and withdraw during the few seconds the request is being
-handed to Bambuddy; try again once it has landed.
+to ask. Decline and withdraw also answer `409` while the request is being
+handed to Bambuddy, which takes up to about a minute. Don't just retry: re-read
+the ticket. Usually it has landed in `Slicing`, and then neither applies any
+more. Only if intake failed and left it `Requested` can you try again. (If the
+process running intake died mid-handoff, its claim lapses after ten minutes.)
 
 **4. Writes refuse a foreign `Origin`.** CSRF here rests on `SameSite=Lax` plus
 an Origin check, which is Better Auth's model and the app keeps to it. A

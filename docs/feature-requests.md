@@ -46,16 +46,17 @@ a new set of ideas.
 One difference arrived later. A print's status is no longer moved by hand: it
 is read from Bambuddy (see
 [architecture](architecture.md#status-is-derived-not-clicked)), and declining
-is the only move a person makes. A feature request has no machine behind it,
-so the owner still steps it forward. That is where the two tracks now differ;
-everything else in the table still lines up.
+is the only status change a person makes. (People still flag, withdraw and
+re-queue prints; none of those moves the status.) A feature request has no
+machine behind it, so the owner still steps it forward. That is where the two
+tracks now differ; everything else in the table still lines up.
 
 | Print backlog | Feature track |
 | --- | --- |
 | `Story` | `FeatureRequest` |
 | `PPP-104` | `FRR-104` (`featureRef`) |
 | `storyScope` | `featureScope` — a client sees their own, the owner sees all |
-| `BOARD` + `deriveStatus` (Requested→Slicing→Ready→Printing→Done, read from Bambuddy) | `FEATURE_FLOW` (Requested→Accepted→In progress→Shipped→Done, stepped by the owner) |
+| `BOARD` + `deriveStatus` — Requested, Slicing, Ready, Printing on the board, then Done; read from Bambuddy, so a stage can be skipped and `Failed` can come from any of them | `FEATURE_FLOW` (Requested→Accepted→In progress→Shipped→Done, stepped by the owner one at a time) |
 | `assertDecline` — Declined from Requested only | `assertFeatureTransition` — forward-only, one step, Declined from Requested |
 | `/board` `/queue` `/story/[id]` | `/frr` `/frr/queue` `/frr/[id]` |
 | `src/lib/stories.ts` | `src/lib/features.ts` |
@@ -65,9 +66,9 @@ The pure rules sit beside the print ones in
 merged into one generic helper on purpose**: the print rules are load-bearing
 and exercised directly by the suites, so a shared cleverness that a change to
 one backlog could quietly bend for the other is a worse trade than a little
-duplication. The *shape* is the same, which is what makes the owner's
-experience familiar, but each backlog stays independently legible and
-testable.
+duplication. Board, scope, conversation and decline work the same way in
+both, which is what makes the owner's experience familiar, but each backlog
+stays independently legible and testable.
 
 ## What it shares, and what stays separate
 

@@ -14,14 +14,15 @@ export const dynamic = "force-dynamic";
 /**
  * History Prints.
  *
- * The prints that have left, or are leaving, the active rail — `Delivery`,
- * `Done` and `Declined`. The rail (`/board`) is for what is still moving; this
+ * The prints that have left the active rail — `Done`, `Failed` and
+ * `Declined`. The rail (`/board`) is for what is still moving; this
  * is where you come to find an old job and run it again. Scoped exactly like
  * the board and `/me`: a client sees only their own, the printer owner sees
  * the group.
  *
- * The whole point is re-printing without re-uploading, so every row carries a
- * "Print again" that clones the ticket and copies the file (FRR-102). Filters
+ * The whole point is printing again without pasting the link again, so every
+ * row carries a "Print again" that clones the ticket — same link, same spool —
+ * and sends it through intake afresh (FRR-102). Filters
  * are plain form controls driven by the query string, applied server-side, so
  * the page works with JavaScript off and no filter can widen the scope.
  */

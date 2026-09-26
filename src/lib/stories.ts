@@ -64,7 +64,7 @@ export class StoryProblem extends Error {
 
 const problem = (status: number, message: string) => new StoryProblem(status, message);
 
-/** `assertTransition` speaks `AuthzError`; the layers above speak status codes. */
+/** `assertDecline` speaks `AuthzError`; the layers above speak status codes. */
 function asProblem(error: unknown): never {
   if (error instanceof AuthzError) throw problem(403, error.message);
   throw error;
@@ -166,11 +166,16 @@ export function storyIdOr400(raw: unknown): number {
   return parsed.data;
 }
 
-/** Refused because `processIntake` holds the story, or just moved it past `Requested`. */
+/**
+ * Refused because `processIntake` holds the story, or just moved it past
+ * `Requested`. Not "try again": intake usually lands the story in `Slicing`,
+ * where declining and withdrawing no longer apply at all. Whatever happens
+ * next depends on where it landed, so that's what to go and look at.
+ */
 function handingOff(id: number) {
   return problem(
     409,
-    `${storyRef(id)} is being handed to Bambuddy right now — refresh in a minute and try again.`,
+    `${storyRef(id)} is being handed to Bambuddy right now — refresh the ticket to see where it landed.`,
   );
 }
 
