@@ -176,7 +176,6 @@ export const STORY_FIELDS = {
   neededBy: true,
   modelUrl: true,
   resolvedTitle: true,
-  plateCount: true,
   spoolId: true,
   material: true,
   colorName: true,

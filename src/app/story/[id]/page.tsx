@@ -88,11 +88,6 @@ export default async function StoryPage({
                     {story.modelUrl}
                   </p>
                 )}
-                {story.plateCount !== null && (
-                  <p className="m-0 mt-[8px] font-mono text-[11px] uppercase tracking-[0.05em] text-ink-3">
-                    {story.plateCount} {story.plateCount === 1 ? "plate" : "plates"}
-                  </p>
-                )}
               </div>
             </div>
 

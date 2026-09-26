@@ -281,7 +281,6 @@ model Story {
 
   /// Filled in from Bambuddy's URL resolution at intake, display only.
   resolvedTitle String?
-  plateCount    Int?
 
   // --- color/material, snapshotted from live Bambuddy inventory at intake ---
   //

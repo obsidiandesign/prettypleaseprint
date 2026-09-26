@@ -64,19 +64,6 @@ jobs:
       - name: Documentation links
         run: npm run check:links
 
-  models:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npx prisma generate
-      - name: Upload validator vs. hostile fixtures
-        run: npm run verify:models
-
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 20

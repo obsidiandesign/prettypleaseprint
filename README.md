@@ -408,7 +408,7 @@ something, see [SECURITY.md](SECURITY.md).
 
 Issues and pull requests are welcome. The eight verification suites in
 `scripts/` are the contract — `npm run verify:auth`, `verify:upload`,
-`verify:queue`, `verify:models`, `verify:passkey` and `probe:security` all run
+`verify:queue`, `verify:passkey` and `probe:security` all run
 in CI against the built container image, not a dev server. If a change makes
 one fail, that is the change talking.
 

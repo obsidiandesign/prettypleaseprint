@@ -108,7 +108,6 @@ const STORY_SCHEMA = {
       properties: {
         url: { type: "string", examples: ["https://makerworld.com/en/models/123456"] },
         resolvedTitle: { type: ["string", "null"], examples: ["Cable clip, 4 mm"] },
-        plateCount: { type: ["integer", "null"] },
       },
     },
     material: {

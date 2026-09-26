@@ -178,7 +178,6 @@ export function storyResource(story: StoryRow) {
     model: {
       url: story.modelUrl,
       resolvedTitle: story.resolvedTitle,
-      plateCount: story.plateCount,
     },
     material: story.material,
     color: { name: story.colorName, hex: story.colorHex },

@@ -10,7 +10,6 @@ image** rather than a dev server. They are the specification; if a change makes
 one fail, that is the change talking.
 
 ```bash
-npm run verify:models     # upload validator vs. hostile fixtures — needs nothing running
 npm run verify:auth       # registration, sign-in, password reset
 npm run verify:upload     # upload → board → story
 npm run verify:queue      # admin queue, status flow, conversation, access

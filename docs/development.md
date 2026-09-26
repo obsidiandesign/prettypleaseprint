@@ -32,7 +32,6 @@ every outgoing email is caught by **Mailpit at http://localhost:8025**, so
 invitation and reset links are clickable there.
 
 ```bash
-npm run verify:models         # upload validator vs. hostile fixtures (no server needed)
 npm run verify:auth           # registration, sign-in and password reset, end to end
 npm run verify:upload         # upload -> board -> story, end to end
 npm run verify:queue          # the admin queue, status flow and conversation
@@ -73,7 +72,6 @@ as four gates that can be required by name in branch protection:
 | Gate | What it does |
 | --- | --- |
 | `guard` | typecheck, and the secret scanner over every tracked file |
-| `models` | the upload validator against hostile fixtures — no server needed |
 | `verify` | raises the real compose stack and runs all five integration suites against the built image, **including the WebAuthn ceremonies in a headless Chrome** |
 | `trivy` | filesystem scan for vulnerabilities, secrets and misconfiguration; HIGH/CRITICAL fail |
 

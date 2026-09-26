@@ -327,7 +327,6 @@ src/app/
   scope.ts               pure authorisation predicates (no server-only)
   csp.ts                 Content-Security-Policy builder + nonce
   audit.ts               the append-only trail
-  models.ts              upload validation + mesh measurement
   storage.ts             S3/MinIO, signed URLs, generated keys
   catalog.ts             the fixed choices a request is made from
   stories.ts             every operation on a ticket — the rules, once
@@ -350,7 +349,6 @@ src/app/
 scripts/
   deploy-wizard.sh       pick an image, verify it, deploy, auto-rollback
   vendor-swagger.ts      copies Swagger UI into public/docs at build time
-  verify-models.ts       validator vs. hostile fixtures
   verify-auth.ts         registration, sign-in and password reset
   verify-upload.ts       upload -> board -> story
   verify-passkey.ts      WebAuthn in a real browser
