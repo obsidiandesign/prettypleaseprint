@@ -3,8 +3,9 @@
 [← back to the README](../README.md)
 
 A second backlog, alongside the print one: anyone can file a feature request,
-and the printer owner triages it through the same stages, conversation,
-notifications and audit trail a print goes through. It lives at **`/frr`**.
+and the printer owner triages it through its own stages, with the same kind of
+board, conversation, notifications and audit trail a print has. It lives at
+**`/frr`**.
 
 ## For everyone
 
@@ -39,16 +40,23 @@ notifications and audit trail a print goes through. It lives at **`/frr`**.
 ## How it mirrors the print backlog
 
 The point of the feature was "handle them exactly as the current backlog", so
-the 'frr' track is a deliberate parallel of the print one rather than a new set
-of ideas:
+the 'frr' track was built as a deliberate parallel of the print one rather than
+a new set of ideas.
+
+One difference arrived later. A print's status is no longer moved by hand: it
+is read from Bambuddy (see
+[architecture](architecture.md#status-is-derived-not-clicked)), and declining
+is the only move a person makes. A feature request has no machine behind it,
+so the owner still steps it forward. That is where the two tracks now differ;
+everything else in the table still lines up.
 
 | Print backlog | Feature track |
 | --- | --- |
 | `Story` | `FeatureRequest` |
 | `PPP-104` | `FRR-104` (`featureRef`) |
 | `storyScope` | `featureScope` — a client sees their own, the owner sees all |
-| `FLOW` (Requested→…→Done) | `FEATURE_FLOW` (Requested→Accepted→In progress→Shipped→Done) |
-| `assertTransition` | `assertFeatureTransition` — forward-only, one step, Declined from Requested |
+| `BOARD` + `deriveStatus` (Requested→Slicing→Ready→Printing→Done, read from Bambuddy) | `FEATURE_FLOW` (Requested→Accepted→In progress→Shipped→Done, stepped by the owner) |
+| `assertDecline` — Declined from Requested only | `assertFeatureTransition` — forward-only, one step, Declined from Requested |
 | `/board` `/queue` `/story/[id]` | `/frr` `/frr/queue` `/frr/[id]` |
 | `src/lib/stories.ts` | `src/lib/features.ts` |
 
@@ -57,21 +65,22 @@ The pure rules sit beside the print ones in
 merged into one generic helper on purpose**: the print rules are load-bearing
 and exercised directly by the suites, so a shared cleverness that a change to
 one backlog could quietly bend for the other is a worse trade than a little
-duplication. The *shape* is identical — that is what makes the owner's
-experience the same — but each backlog stays independently legible and
+duplication. The *shape* is the same, which is what makes the owner's
+experience familiar, but each backlog stays independently legible and
 testable.
 
 ## What it shares, and what stays separate
 
 - **Its own tables** — `featureRequest` and `featureComment`. `Story` and the
   print flow are untouched; there is no `kind` flag threading feature logic
-  through the upload, the viewer or the API.
+  through intake, the Bambuddy sync or the API.
 - **Shared infrastructure, extended additively** — one `Notification` row can
   point at a story *or* a feature (a nullable `featureId`), and the Activity
   feed routes to `/story` or `/frr` on whichever is set. The audit trail gains
   `feature.*` verbs. Neither change alters how a print behaves.
-- **No file.** A feature request is text; there is nothing in object storage,
-  so withdrawing one just removes the row and its conversation.
+- **Nothing outside the database.** A feature request is text; nothing is
+  held in Bambuddy for it, so withdrawing one just removes the row and its
+  conversation.
 
 ## Verifying it
 

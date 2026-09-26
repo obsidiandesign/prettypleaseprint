@@ -9,7 +9,7 @@
      say what it would have caught. -->
 
 - [ ] `npm run typecheck`
-- [ ] the suites this touches (`verify:auth` / `verify:queue` / `verify:frr` / `verify:api` / `verify:passkey` / `probe:security`)
+- [ ] the suites this touches (`verify:auth` / `verify:queue` / `verify:frr` / `verify:benefits` / `verify:api` / `verify:passkey` / `probe:security`)
 - [ ] `npm run check:links` if any documentation moved
 
 ## Anything a reviewer should push back on
