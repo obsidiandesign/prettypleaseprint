@@ -5,7 +5,9 @@ SAST, SCA and DAST. Everything below was run against the production build
 (`npm run build && npm start`) on 2026-08-23.
 
 Covers the authentication and invitation slice and the upload → board → story
-slice. Re-run after every slice; the numbers below are current.
+slice. The numbers below are from that run. File upload has since been
+replaced by link intake through Bambuddy, which was reviewed but not re-scanned
+— see [Since the audit](#since-the-audit-link-intake-and-bambuddy-september-2026).
 
 **Re-run on 2026-08-23** after authentication changed shape: invitation links
 now *register* an account with a username and a password, and people sign in
@@ -35,7 +37,7 @@ npm run probe:security                     # DAST, app-specific (103 probes)
 | Semgrep | 153 rules, 37 files | 1 (false positive) | 0 |
 | OWASP ZAP baseline | passive DAST | **1 medium, 3 low** | 0 fail / 63 pass |
 | `probe:security` | 103 app-specific probes | **2 real, 4 artifacts** | 103 pass |
-| `verify:models` | 29 upload-validator checks | — | 29 pass |
+| `verify:models` | 29 upload-validator checks | — | 29 pass *(suite removed with uploads)* |
 | `verify:passkey` | WebAuthn in a real browser | *unverified* | 13 pass |
 
 A generic scanner cannot reason about *this* app's authority model, so the
@@ -44,6 +46,83 @@ what ZAP structurally cannot: whether a client can call the admin API, whether
 an invite is single-use, whether a role can be set from outside, whether a
 captured cookie survives sign-out, and — since the JSON API landed — whether
 the same authority model holds when the caller is not a browser.
+
+## Since the audit: link intake and Bambuddy (September 2026)
+
+File upload was replaced by a MakerWorld link that the app hands to a Bambuddy
+instance to import, slice and queue (see
+[architecture](architecture.md#intake-a-link-handed-to-bambuddy)). **The tool
+runs above were not repeated for this change.** What follows is the review of
+the change itself, done by reading the code and testing against a live
+Bambuddy, and it says where a finding above no longer applies.
+
+### Surface that went away
+
+The upload endpoint and its byte-level validator, object storage, the model
+download route and the "Open in PrusaSlicer" link credential are all deleted,
+along with `verify:models` and the probes that covered them. The in-memory
+upload buffering and the unserved signed URLs listed under
+[Open items](#open-items) went with them. MinIO is still started by the compose
+files but nothing talks to it.
+
+### Surface that arrived
+
+- **Outbound requests driven by user input (A10).** The audit's A10 row says
+  the app makes no outbound request from user input; that is no longer true.
+  A pasted link is sent to Bambuddy's resolve endpoint, and Bambuddy fetches
+  from MakerWorld. The app only accepts a `makerworld.com` or
+  `makerworld.com.cn` model page (`isMakerWorldModelUrl`, host and path
+  checked after parsing, not by substring), so it cannot be used to point
+  Bambuddy at an internal address. The app's own outbound calls go only to
+  the configured `BAMBUDDY_URL`, and no user input reaches that URL's path:
+  the ids in it come from Bambuddy's own responses.
+- **A credential for the print farm.** `BAMBUDDY_API_KEY` is scoped to Manage
+  Library + Manage Queue. Without Control Printer, a compromise of this app can
+  fill the library and queue, but cannot start, stop or alter a print. The key
+  travels to Bambuddy over the LAN, over HTTP unless Bambuddy is put behind
+  TLS; that is accepted for a LAN-only service.
+- **A route with no session.** `POST /api/cron/sync` is authorised by
+  `CRON_SECRET` alone, compared in constant time, and refuses everything when
+  the secret is unset. All it can do is run the sync that would run anyway.
+- **Stored XSS through the link (A03), fixed in review.** The link is rendered
+  as an `<a href>`, so a `javascript:` or `data:` URL would have been script
+  waiting for a click. Only `http(s)` is accepted, and the story page checks
+  again before rendering a link, which also covers legacy rows.
+- **Client-chosen colour and material (A08).** The form sends a `spoolId`
+  only. The server looks it up in Bambuddy's live inventory, refuses a spool
+  that is gone or is not PLA, and copies the material and colour from the
+  spool. A posted `material`, `colorName` or `status` never reaches the row.
+- **Races between a person and the sync (A04), fixed in review.** Intake
+  claims a story atomically before calling Bambuddy, so a cron tick cannot
+  import it a second time. Decline and withdraw are conditional on that claim
+  and answer `409` rather than being overwritten mid-handoff, or deleting a
+  row whose Bambuddy work would then run unwatched.
+
+### The safety property this change depends on
+
+Not an OWASP category, but the one that matters most here: a sliced request
+must wait for a person before it prints. Bambuddy creates each queue entry
+wanting to auto-start, with no global setting to stop it, so the app switches
+every entry to manual start within seconds of it appearing, and re-asserts
+that on every sync. The first implementation got this wrong. It waited for the
+slicing run to finish, and would have lost the race to Bambuddy's dispatch
+every time. That was caught by testing against the live printer before
+release, not by a scanner. It has no automated test in CI, which has no
+Bambuddy.
+
+### Residual risk accepted
+
+- **Bambuddy's error text reaches the requester verbatim.** That is on purpose,
+  since "Bambu Cloud sign-in expired" is more useful than "something went
+  wrong". But it means whatever Bambuddy puts in an error message is shown to
+  an invited user.
+- **Each request costs Bambuddy work.** An invited user can queue imports and
+  slicing runs as fast as they can submit, with no rate limit. At this size, a
+  person doing that is a conversation, not a threat model.
+- **The spoofing probes need a Bambuddy to run.** The probes that check a
+  posted `uploaderId` or `status` is ignored skip in CI rather than pass.
+  Nothing runs them automatically; set `BAMBUDDY_URL`, `BAMBUDDY_API_KEY` and
+  `BAMBUDDY_TEST_SPOOL_ID` to run them by hand.
 
 ## Findings that were real
 
@@ -162,7 +241,7 @@ hit was a false positive *inside* that generated file.
 | **A07** | Auth Failures | **Pass, after fix 1.** Passwords: ≥10 characters, breach-checked against HIBP by k-anonymity, guessing capped at 10/min per IP. No user enumeration — a wrong password and an invented username give byte-identical responses, and an unknown username still pays for a hash so the wall clock does not answer either. Set-password links single-use, 30-minute TTL, hashed at rest, and they establish **no session**. Setting a password revokes the sessions the old one opened. Off-site and protocol-relative redirect targets refused, both via `?next=` and via the API's `callbackURL`. Sign-out kills the session server-side. A bearer token is the session token rather than a separate credential: an invented one grants nothing, and sign-out revokes the token at the same instant it revokes the cookie — probed, because a token that outlived sign-out would be a way back into an account whose owner believes they have left. See the section below. |
 | **A08** | Integrity Failures | **Pass.** `role`, `initials` and `invitedById` cannot be set from the request body: declared `input: false`, and Better Auth refuses the whole sign-up with `FIELD_NOT_ALLOWED` rather than silently trimming it. A chosen `id` and a posted `emailVerified` reach the endpoint undeclared and are overruled server-side from the invite. Both halves probed. On upload, `uploaderId` comes from the session and a posted `status` is ignored, both probed. Storage keys are generated, never derived from the filename. Lockfile committed. |
 | **A09** | Logging & Monitoring | **Pass.** An append-only `AuditEvent` table records invitations sent, resent, revoked, accepted and *rejected*; access revoked and restored; password resets requested and completed; sign-in and sign-out; story creation and refused uploads. The client address is recorded only from a header the deployment has explicitly named as trustworthy (`TRUST_PROXY_HEADERS`), and no address at all otherwise — a blank rather than a fiction. Rows are denormalised (`actorEmail`, `subject`) so the trail still reads correctly after the user or story it refers to is deleted, and a probe asserts no token or secret reaches `detail`. |
-| **A10** | SSRF | **Pass (low exposure).** The app makes no outbound request from user input. A link-local `callbackURL` (`169.254.169.254`) is refused. |
+| **A10** | SSRF | **Pass (low exposure).** The app makes no outbound request from user input. A link-local `callbackURL` (`169.254.169.254`) is refused. *No longer true of intake: a pasted link now reaches Bambuddy — see [Since the audit](#surface-that-arrived).* |
 
 ## A07 with passwords in the picture
 
@@ -310,7 +389,7 @@ the session, not the passkey and not the password.
 
 `revokeInvite` is deliberately **not** gated — withdrawing an unaccepted invite
 only ever removes reach — and neither is `/admin/benefits`, which decides what
-tips the upload form offers and grants nobody anything.
+tips a request can carry and grants nobody anything.
 
 Two implementation notes, both of which look odd on purpose:
 
@@ -337,6 +416,9 @@ drive the *same* form submission and differ only in the age of the session, so
 the pair fails if the gate stops discriminating in either direction.
 
 #### The slicer link credential, and the token it replaced
+
+*Removed in September 2026 along with file upload: there is no model to hand to
+a slicer any more. Kept for the record.*
 
 Shortening the session broke "Open in PrusaSlicer", and the way it broke is
 worth recording because the feature had been quietly depending on the weakness.
@@ -465,8 +547,8 @@ README now says.
 - **No authenticated active scan.** ZAP ran a passive baseline against the
   unauthenticated surface. The authenticated surface is covered by the 91
   custom probes instead, which is better for authorisation logic and worse for
-  generic injection classes. Once the board and upload screens land, an
-  authenticated ZAP active scan is worth configuring.
+  generic injection classes. An authenticated ZAP active scan is still worth
+  configuring, and more so now that a pasted link is stored and rendered.
 - **CSP verified against served markup, not a live browser** — except at
   `/docs`, which was. Building the API console forced the issue: its stylesheet
   had to move out of an inline `<style>` block and into a file, because
@@ -474,12 +556,14 @@ README now says.
   than failing. That is the failure mode this item is about — a policy
   violation that looks like a design bug. The rest of the app still deserves
   the same browser check.
-- **Signed model URLs are minted but nothing serves them yet.**
+- ~~**Signed model URLs are minted but nothing serves them yet.**~~ *Gone with
+  object storage, September 2026.*
   `signedModelUrl` exists with a 10-minute expiry and the ownership check
   gates it, but the download route lands with the 3D viewer. When it does,
   `connect-src` has to widen to the storage origin — it is `'self'` today,
   which will block the fetch.
-- **The upload buffers the whole file in memory**, and now at a 250 MB cap
+- ~~**The upload buffers the whole file in memory**~~ — *gone with uploads,
+  September 2026. The record, as it stood:* at a 250 MB cap
   rather than 50 MB. The buffering is not the validator's doing —
   `request.formData()` has already read the whole body before the route handler
   runs — so peak memory is set by how many large uploads overlap. Of the two
@@ -487,8 +571,7 @@ README now says.
   most two uploads are handled at once, a third waits, and only a long queue is
   refused. That bounds the exposure at roughly two concurrent uploads' worth
   rather than however many arrive together. The streaming parse remains
-  unbuilt, and cannot be built without changing how the file arrives — see
-  [architecture](architecture.md#why-the-memory-is-bounded-by-a-queue-rather-than-a-stream).
+  unbuilt, and cannot be built without changing how the file arrives.
 
   Raising the cap also uncovered that the old one was never enforced as
   advertised: Next truncates a request body at 10 MB when middleware is

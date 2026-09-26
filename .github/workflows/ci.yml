@@ -1,13 +1,11 @@
 # CI — every pull request and every push to main.
 #
-# Four independent gates, so branch protection can require them by name:
+# Three independent gates, so branch protection can require them by name:
 #
 #   guard    — typecheck, the secret scanner over the whole tree, and the
 #              documentation link checker. Cheap and first: a leaked
 #              credential should fail in seconds, not after a six-minute
 #              integration run.
-#   models   — the upload validator against hostile fixtures. Needs no
-#              server and no database, so it stays a fast gate of its own.
 #   verify   — raises the REAL compose stack from source and runs every
 #              suite against the built image, including the WebAuthn
 #              ceremonies in a headless Chrome. This is the one that
@@ -115,16 +113,14 @@ jobs:
 
       - name: Invite and sign-in flow
         run: npm run verify:auth
-      - name: Upload, board and story
-        run: npm run verify:upload
       - name: Admin queue and the status flow
         run: npm run verify:queue
       # The 'frr' feature-request track — the same board/queue/flow mechanics as
       # prints, on its own tables. Drives the real forms exactly as verify:queue.
       - name: Feature requests, filed and triaged
         run: npm run verify:frr
-      # Owner-managed benefits (the tip catalogue): admin CRUD, the upload form
-      # rendering the list + preferences, and server-side tip validation.
+      # Owner-managed benefits (the tip catalogue): admin CRUD, and that a past
+      # request keeps its tip after the benefit behind it is edited or deleted.
       - name: Benefits, owner-managed
         run: npm run verify:benefits
       # The second front door onto the same operations. Runs against the built

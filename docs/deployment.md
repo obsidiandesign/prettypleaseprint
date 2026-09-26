@@ -195,27 +195,53 @@ Rollback is the same menu: pick the older tag.
 The app publishes no host port, so `ppp-app:3000` over the shared network is
 the only way in. Nothing on the LAN can reach it in cleartext and bypass TLS.
 
-### Your proxy has to allow the upload size too
+### Bambuddy and the sync
 
-The app accepts models up to **250 MB**, and a reverse proxy in front of it has
-its own opinion about request bodies. Nginx Proxy Manager's default
-`client_max_body_size` is small, and when it bites, the upload fails at the
-proxy — so the app logs nothing at all and the browser shows a generic error.
+Every request is sliced and queued by a Bambuddy instance, so the app needs to
+reach one. It only ever talks to it from the server, so Bambuddy stays on the
+LAN (or a Tailscale address) and is never exposed to browsers. The app
+container sits on Docker's default network and can reach LAN addresses as-is.
 
-In NPM: the proxy host → *Advanced* → add
+On the Bambuddy side, once:
 
-```nginx
-client_max_body_size 300m;
+1. **A service account and an API key** with **Manage Library + Manage Queue**
+   only. Leave Control Printer off: a compromise of this app can then slice and
+   queue, but never start, stop or touch a running print. A dedicated account
+   keeps the key working if your own account's role changes.
+2. **A Slicer Pipeline for PLA.** Its id goes in `BAMBUDDY_PIPELINE_ID`. Every
+   request uses it, whatever colour was picked, which is why the form only
+   offers PLA spools. Its dispatch settings should add the result to the print
+   queue: a run that never produces a queue entry is marked `Failed` after two
+   minutes, with a pointer back here.
+3. **Bambu Cloud signed in.** MakerWorld downloads go through it. When that
+   sign-in expires, new requests wait in `Requested` with a message, the admin
+   is told once, and they carry on by themselves once it is renewed.
+
+Then in `.env.docker`: `BAMBUDDY_URL`, `BAMBUDDY_API_KEY`,
+`BAMBUDDY_PIPELINE_ID` and `CRON_SECRET`. In production the app refuses a
+Bambuddy call with any of the first three missing.
+
+**Schedule the sync — nothing in the stack does.** Status moves by polling
+Bambuddy, and `POST /api/cron/sync` is the poll. It needs
+`Authorization: Bearer $CRON_SECRET`; without `CRON_SECRET` set, it refuses
+every call. A host crontab entry is enough:
+
+```cron
+*/5 * * * * curl -fsS -X POST -H "Authorization: Bearer <CRON_SECRET>" https://print.example.org/api/cron/sync
 ```
 
-300, not 250: a multipart body is the file plus its boundaries and the form
-fields, so a maximum-sized model arrives as a slightly larger request. The app
-uses the same allowance internally (`MAX_REQUEST_BYTES`).
+It answers `{"processed": n}`, the number of open tickets it looked at. Without
+the schedule, a ticket gets its first move from intake itself (usually as far
+as `Ready`) and then stops there, and anything that failed to reach Bambuddy
+is never retried.
 
-Worth knowing that this was never exercised before: the framework itself capped
-bodies at 10 MB until that was raised, so no upload large enough to reach the
-proxy's limit had ever been sent. If uploads used to work and large ones now
-fail with nothing in the app log, this is the first place to look.
+**The one safety property to know about.** A pipeline run creates its queue
+entry wanting to auto-start as soon as a printer is free, and Bambuddy has no
+global setting to stop that. The app switches each entry to manual start
+within seconds of it appearing: during intake, on every sync, and again on
+every sync while it waits. So a request never prints without somebody starting
+it in Bambuddy. The five-minute schedule is not what that race depends on, but
+it is the backstop if intake's own poll was cut short.
 
 ### Why `TRUST_PROXY_HEADERS` is a separate switch
 
@@ -316,8 +342,9 @@ and so will the database, and it never resets a password that already exists.
 
 ### What to back up
 
-Everything is under `DATA_ROOT`: `db/` (Postgres) and `models/` (the uploaded
-files). A ZFS snapshot of the dataset captures both. `.env.docker` holds the
+Everything is under `DATA_ROOT`: `db/` (Postgres), and `models/` on a
+deployment old enough to have taken uploads (nothing new is written there). A
+ZFS snapshot of the dataset captures both. `.env.docker` holds the
 secrets and is not in the repo — keep it somewhere you will still have it after
 a rebuild, because losing `BETTER_AUTH_SECRET` invalidates every session and
 losing `DB_PASSWORD` locks you out of the database.

@@ -10,7 +10,8 @@
 | Auth | [Better Auth](https://better-auth.com) 1.7 — username/password, passkeys, breach check, admin plugin |
 | Data | Prisma 6 → PostgreSQL 17 |
 | Styling | Tailwind v4, design tokens from the handoff as CSS variables |
-| Local infra | Docker Compose: Postgres, MinIO (model files), Mailpit (mail) |
+| Local infra | Docker Compose: Postgres, Mailpit (mail), and MinIO, which nothing uses any more |
+| Print farm | a Bambuddy instance on the LAN — see [Bambuddy and the sync](deployment.md#bambuddy-and-the-sync) |
 
 Chosen to match the existing house style (`huere-siech` is Next 15 + Prisma,
 `danileau.com` is React + TS + Tailwind) and the handoff's own suggested stack.
@@ -18,7 +19,7 @@ Chosen to match the existing house style (`huere-siech` is Next 15 + Prisma,
 ## Getting started
 
 ```bash
-cp .env.example .env          # then set BETTER_AUTH_SECRET: openssl rand -base64 32
+cp .env.example .env          # then set BETTER_AUTH_SECRET, and the BAMBUDDY_* block
 docker compose up -d          # postgres :5432, minio :9000, mailpit :8025
 npm install
 npm run db:migrate
@@ -31,9 +32,21 @@ a password — open it, then invite people from `/admin/invites`. In development
 every outgoing email is caught by **Mailpit at http://localhost:8025**, so
 invitation and reset links are clickable there.
 
+Filing a request needs a reachable Bambuddy: the upload page reads its spool
+list, and intake imports and slices through it. Without one, everything else
+works and the form says it cannot reach the colour list. The dev server does
+not run the sync on a schedule; call it by hand to move tickets along:
+
+```bash
+curl -X POST -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/sync
+```
+
+Testing against a real Bambuddy creates real library files and queue entries.
+Every entry is switched to manual start, so nothing prints by itself, but clean
+them up in Bambuddy afterwards.
+
 ```bash
 npm run verify:auth           # registration, sign-in and password reset, end to end
-npm run verify:upload         # upload -> board -> story, end to end
 npm run verify:queue          # the admin queue, status flow and conversation
 npm run verify:frr            # the feature-request track (file, triage, the flow)
 npm run verify:benefits       # the owner-managed benefits (tip) catalogue

@@ -58,17 +58,15 @@ no header that names a user.
 | --- | --- | --- |
 | `GET` | `/api/health` | Can the app serve? The only endpoint with no session. |
 | `GET` | `/api/stories` | Your tickets. The printer owner's is everyone's. |
+| `POST` | `/api/stories` | Open a request from a MakerWorld link. JSON. |
 | `GET` | `/api/stories/{id}` | One ticket. |
 | `DELETE` | `/api/stories/{id}` | Withdraw your own request. |
-| `POST` | `/api/stories/{id}/advance` | Move it one step along. *Printer owner.* |
 | `POST` | `/api/stories/{id}/decline` | Say no. *Printer owner.* |
 | `POST` | `/api/stories/{id}/flag` | Flag a model problem, with a reason. *Printer owner.* |
 | `DELETE` | `/api/stories/{id}/flag` | Clear the flag. *Printer owner.* |
 | `GET` `POST` | `/api/stories/{id}/comments` | The conversation on a ticket. |
 | `GET` | `/api/notifications` | Your Activity feed. |
 | `POST` | `/api/notifications/read` | Mark one read, or all of them. |
-| `POST` | `/api/upload` | Upload a model and open a request. Multipart. |
-| `GET` | `/api/models/{id}` | The model's bytes. |
 | `GET` | `/api/openapi.json` | This surface, machine-readable. |
 | | `/api/auth/*` | Every Better Auth endpoint — sign-in, passkeys, admin, reset. |
 
@@ -77,13 +75,15 @@ every ticket as `ref`.
 
 ## Five things that will otherwise surprise you
 
-**1. There is no "set the status" endpoint.** The flow is
-`Requested → Accepted → Printing → Delivery → Done`, forwards, one step at a
-time, and `advance` derives the next state rather than taking one. That is the
-point: an endpoint accepting a target status is an invitation to skip a step,
-and the board's whole claim is that it shows where work actually is. `Declined`
-is reachable only from `Requested` — once the printer owner has said yes,
-saying no is a conversation rather than a state change.
+**1. Nothing moves a status by hand.** The flow is
+`Requested → Slicing → Ready → Printing → Done`, with `Failed` and `Declined`
+off to the side, and every step but `Declined` is read from Bambuddy — the
+pipeline run while it slices, then the queue entry it lands in. There is no
+endpoint that advances a ticket or sets its status, because the board's whole
+claim is that it shows where the work actually is, and only the print farm
+knows that. `Declined` is the printer owner's one lever, and only from
+`Requested`: once a request has reached Bambuddy, saying no is a conversation
+rather than a state change.
 
 **2. `404` and `403` mean different things, deliberately.** A ticket you may
 not see is `404`, because a `403` would confirm it exists — the same rule the
@@ -93,9 +93,10 @@ nobody and confuse an honest client whose ticket is fine.
 
 **3. Withdrawing is the requester's, and it is not the printer owner's.**
 Seeing every story is the widest scope in the app and it still does not include
-deleting somebody's request. And it only works while nobody has acted on it —
+deleting somebody's request. And it only works before Bambuddy holds anything for it —
 `Requested` or `Declined`. Past that you get `409` and the name of the person
-to ask.
+to ask. So do decline and withdraw during the few seconds the request is being
+handed to Bambuddy; try again once it has landed.
 
 **4. Writes refuse a foreign `Origin`.** CSRF here rests on `SameSite=Lax` plus
 an Origin check, which is Better Auth's model and the app keeps to it. A
@@ -103,20 +104,36 @@ request with *no* `Origin` header is fine — that is `curl`, and it is not a
 browser being driven by somebody else's page. A request with the wrong one is
 `403`.
 
-**5. Uploads are multipart, and the bytes decide.** `.stl` and `.3mf` only, at
-most 250 MB, validated against the file's actual content rather than its name —
-an STL renamed `.3mf` is refused. Nothing reaches storage until the file has
-been inspected and no ticket exists until the object is in place, so a rejected
-upload leaves nothing behind. The uploader comes from the session: an
-`uploaderId` or a `status` in the body is ignored.
+**5. A request is a link, not a file, and the colour is a spool.** `modelUrl`
+must be a MakerWorld model page (`https://makerworld.com/.../models/<id>`);
+anything else could never be fetched, so it is refused up front. `spoolId` is
+the only thing that names a colour: it is looked up in Bambuddy's live
+inventory at that moment, must still be on the shelf (`409` if it has gone)
+and must be PLA, because the one slicer pipeline is a PLA recipe (`400`
+otherwise). Material, colour name and hex are copied from the spool, never
+taken from the body. The requester comes from the session: an `uploaderId` or
+a `status` in the body is ignored.
+
+The ticket is created, then handed to Bambuddy in the same request, so the
+response usually already reads `Slicing`. If Bambuddy stumbles after the ticket
+exists, you still get `201` with the ticket `Requested` and an `errorMessage`,
+and the next sync retries it. If Bambuddy cannot be reached *before* the ticket
+exists — the spool lookup — you get `503` and nothing is created.
 
 ```bash
-curl -s https://print.example/api/upload \
+curl -s https://print.example/api/stories \
   -H "authorization: Bearer $TOKEN" \
-  -F file=@clip.stl \
-  -F title='Cable clip' -F material=PETG -F colorName=Slate \
-  -F quantity=2 -F tip='A beer' -F note='Teal if you have it'
+  -H "content-type: application/json" \
+  -d '{"title":"Cable clip","modelUrl":"https://makerworld.com/en/models/123456",
+       "spoolId":7,"quantity":2,"note":"No rush"}'
 ```
+
+There is no endpoint that lists spools yet, so a script has to know the
+Bambuddy spool id it wants; the upload form is where the live list is shown.
+
+A ticket on the wire stops at `status` and `errorMessage`: the Bambuddy library
+file, pipeline run and queue entry behind it are sync plumbing and never leave
+the server.
 
 ## Errors
 
@@ -133,7 +150,7 @@ One shape, everywhere, and the message is written for a person:
 | `403` | Authenticated, but not allowed — or a foreign `Origin` on a write. |
 | `404` | No such thing, **or** not one you may see. |
 | `409` | Real, yours, and not in a state where that makes sense. |
-| `413` `422` | Upload too large, or not an acceptable model. |
+| `503` | Bambuddy could not be reached to check the spool. Nothing was created; try again. |
 | `500` | Our fault. The message never carries detail — no stack, no query. |
 
 `500` bodies are deliberately uninformative. The detail is in the server log,

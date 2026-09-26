@@ -5,125 +5,143 @@
 How the pieces work, and the places where this app deliberately departs from
 the design handoff it was built from.
 
-## The viewer
+## Intake: a link, handed to Bambuddy
 
-Story detail renders the actual uploaded geometry with three.js — `STLLoader`
-for `.stl`, `ThreeMFLoader` for `.3mf` — auto-framed, drag to rotate, with an
-idle spin that stops on first touch and never starts under
-`prefers-reduced-motion`.
+A request used to be an uploaded `.stl` or `.3mf`, validated, stored in MinIO
+and shown in a three.js viewer. It is now a **MakerWorld link**. The printer
+owner runs Bambuddy in front of the
+printer, and Bambuddy can already fetch a MakerWorld model, slice it and queue
+it. So the app stopped holding geometry at all: no upload, no object storage,
+no viewer, no download, no "Open in PrusaSlicer". The link *is* the model, and
+Bambuddy's state is where the ticket stands.
 
-The handoff's lighting rig is kept exactly: hemisphere, a key at (3,5,4) and a
-cool rim behind. It reads well on filament colours from near-black to bone
-white, which is the whole job. The ground and grid moved to this palette,
-because the print bed should look like the app it sits in.
+`src/lib/bambuddy.ts` is the client. It is server-only and talks to Bambuddy on
+the LAN with an API key scoped to **Manage Library + Manage Queue** and nothing
+else. There is no Control Printer permission, so a compromise of this app can
+slice and queue, but cannot start, stop or otherwise touch a running print.
+`src/lib/bambuddy-sync.ts` is everything that happens without a person
+clicking.
 
-It declines anything over **50 MB** (`VIEWER_MAX_BYTES`) and says so, with the
-model's size drawn against that limit so "180 MB" means something. That is not
-a limit on what may be uploaded — the cap is 250 MB — it is a limit on what a
-laptop can be asked to rebuild: the viewer downloads the whole file and expands
-every triangle into typed arrays, and past that size the tab stops answering
-for long enough that people assume the app has broken.
+### What the form takes, and why
 
-The decision is made from the stored `fileSize`, **before anything is fetched**.
-That ordering is the point: a check after the download would still have pulled
-a quarter of a gigabyte across the office and only then given up. The refusal
-is amber rather than red because nothing has failed — the file is whole, it
-prints, and Download and Open in PrusaSlicer are both built for meshes this
-size where a browser is not.
+- **A MakerWorld model page**, checked on the server (`isMakerWorldModelUrl`).
+  Only a MakerWorld link can be resolved, and anything else would fail on every
+  sync pass forever, so it is refused up front. The link is also rendered as an
+  `<a href>`, so it must be `http(s)` (`isHttpUrl`), and the story page checks
+  again before linking.
+- **A colour, picked from what is on the shelf.** The picker is rendered live
+  from Bambuddy's spool inventory (`listSpools`). The only thing the form sends
+  is a `spoolId`, which `createStoryFromLink` looks up again server-side: a
+  spool that has run out is `409`, and material, colour name and hex are copied
+  from the spool, never from the request. They are copied onto the row on
+  purpose, so the ticket keeps showing what was asked for after that spool is
+  archived or restocked.
+- **PLA only.** There is one Slicer Pipeline (`BAMBUDDY_PIPELINE_ID`), a fixed
+  PLA recipe. Colour picks a spool, never a pipeline, so a PETG spool would
+  slice cleanly and print wrong. The picker filters to PLA and the server
+  refuses anything else, because the API takes any spool id.
+- Quantity, a needed-by date and a free-text note, as before.
 
-Three details worth knowing:
+The tip jar is not on the form. The `Benefit` catalogue and `/admin/benefits`
+still exist and `Story.tip` defaults quietly, pending a decision on whether
+tips belong in the new flow.
 
-- **The bytes are proxied, not signed.** `/api/models/[id]` streams from
-  object storage through the app. That is not the elegant option, it is the
-  only correct one here: the deployment publishes no port for MinIO, so a
-  signed URL would point at something the browser cannot reach. Proxying also
-  keeps `connect-src` at `'self'`, so the viewer needs no CSP relaxation —
-  verified with zero violations in a real browser.
-- **It is scoped like the story.** Same `storyScope` fragment, so a client
-  asking for someone else's model gets 404, not 403.
-- **three.js is imported dynamically**, inside the effect. It is fetched when
-  someone opens a ticket and never on the board or the queue.
+### The handoff
 
-The trade: every viewer load moves the whole file through Next. At 250 MB and a
-handful of people that is fine. If this ever faces a wider audience, put
-storage behind the same reverse proxy, hand out a signed URL, and widen
-`connect-src` to that origin.
+`createStoryFromLink` writes the row, then calls `processIntake` in the same
+request:
 
-## Uploads
+1. **resolve** the link (title, model id) and **import** the model into
+   Bambuddy's library → `libraryFileId`
+2. **start a pipeline run** on the one PLA pipeline, with the requested copies
+   → `pipelineRunId`, and the ticket is `Slicing`
+3. **poll the run for ~40 s**, securing any queue entry it creates (below), and
+   tell the requester where the ticket landed
 
-`POST /api/upload` is a route handler rather than a server action, so the
-browser can watch a real XHR progress bar — a large model over office wifi is
-too long for a spinner.
+The two ids and `Slicing` are saved the moment the run exists. A crash after
+that point cannot leave the ticket `Requested` for a retry that would start a
+second run while the first one's queue entry goes unwatched.
 
-Nothing is written to storage until the bytes have been inspected, and no
-story row exists until the object is in place: a rejected file leaves nothing
-behind, and a story never points at an object that was not stored.
+`processIntake` never throws. If Bambuddy is down, or its Bambu Cloud sign-in
+has expired, the ticket stays `Requested` with an `errorMessage`, the admin is
+told once (not every pass), and the next sync retries it. Nobody has to
+resubmit. The one refusal the requester does see is at the very start: if the
+spool lookup cannot reach Bambuddy, the form says so and nothing is created
+(`503` on the API).
 
-`src/lib/models.ts` decides what is acceptable, against the bytes rather than
-the filename:
+A claim (`intakeStartedAt`, a 10-minute lease) keeps the synchronous call and a
+cron tick from both importing the same story. Decline and withdraw respect the
+same claim, so they answer `409` for the few seconds intake holds a story
+rather than being overwritten mid-handoff or orphaning what it created.
 
-- **Binary STL is identified structurally** — 80-byte header, uint32 triangle
-  count, exactly 50 bytes per triangle. If `84 + count × 50` does not equal
-  the file length it is not a binary STL. This check runs *first*, because
-  some tools write the word `solid` into a binary STL's header and a naive
-  sniffer reads that as the ASCII format.
-- **3MF must be a zip containing a model part**, and the archive is guarded
-  against inflating to an implausible size.
-- **Extension and content must agree.** An STL renamed `.3mf` is refused even
-  though both are printable.
-- **Storage keys are generated, never derived from the filename** — that is
-  how path traversal and object overwrites happen. The display name lives in
-  a database column.
+### The one thing that must not be late: manual start
 
-Bounding boxes are measured from the actual mesh, honouring the 3MF `unit`
-attribute. Nothing is inferred beyond that — see the estimate decision above.
+A pipeline run creates its own queue entry as it reaches `dispatching`, often
+6–15 seconds after starting and before the run reports `completed`. That entry
+wants to **auto-start** the moment a printer is free, and Bambuddy has no
+pipeline- or instance-level setting that makes it wait for a person. The app's
+promise is that sliced work waits in a reviewed pile until somebody starts it,
+so the only lever is to PATCH `manual_start: true` onto each entry as soon as
+it exists.
 
-`npm run verify:models` covers all of this with 29 checks, including a PDF and
-an ELF binary renamed `.stl`, an STL that lies about its triangle count, a
-traversal path inside a 3MF, and a zip bomb.
+`secureQueueEntries` does that from three places: intake's tight poll, every
+sync pass while no queue entry is known yet, and a defensive re-assert on every
+pass while a known entry is still pending. It is idempotent: Bambuddy refuses
+the PATCH with `400` once an entry has left `pending`, which is treated as a
+no-op. This was found by testing against the live printer. The first version
+waited for the run to complete and would have lost the race every time.
 
-### How big a model may be, and the limit that was not real
+### Status is derived, not clicked
 
-The cap is **250 MB**, raised from the handoff's 50 MB because real work went
-past it — multi-object plates and scanned meshes — and the app's answer was
-"decimate the mesh", which is asking somebody to damage their model to fit an
-arbitrary number.
+Every status but `Declined` comes from Bambuddy through `deriveStatus` in
+`scope.ts`:
 
-Raising it turned up something worse: **the 50 MB was never real either.** Next
-truncates a request body at 10 MB whenever middleware is in play, and this app
-runs middleware on every route to mint the CSP nonce. Anything past 10 MB
-arrived short, `request.formData()` threw on the truncated body, and the
-uploader was told *"That upload did not arrive intact"* — which reads like a
-network fault and sends people to look in the wrong place. It survived the
-whole life of the app because every fixture in every suite is a few hundred
-bytes; nothing had ever uploaded a big file. `verify:upload` now sends a 12 MB
-model on every run, which is the cheapest thing that would have caught it.
-
-Three numbers, in `src/lib/upload-limits.ts`, deliberately in one place because
-the form, the validator, the OpenAPI document and the framework config all need
-to agree:
-
-| | |
+| Bambuddy | Ticket |
 | --- | --- |
-| `MAX_UPLOAD_BYTES` | 250 MB — the file itself |
-| `MAX_REQUEST_BYTES` | `× 1.2` — the whole multipart body, and the transport ceiling. It has to be the more generous of the two, or a file just over the cap gets truncated into a parse error instead of an honest "too large" |
-| `MAX_INFLATED_BYTES` | `× 3` — what a 3MF may inflate to, scaled off the cap so raising one cannot leave the other behind |
+| pipeline run queued / slicing / dispatching | `Slicing` |
+| queue entry `pending` | `Ready`, waiting for the owner to start it in Bambuddy |
+| queue entry `printing` | `Printing` |
+| queue entry `completed` | `Done` |
+| run failed or cancelled; entry failed, cancelled or skipped | `Failed`, with Bambuddy's own `error_message` |
 
-### Why the memory is bounded by a queue rather than a stream
+A run that completes but never produces a queue entry would otherwise read as
+`Slicing` forever. After a two-minute grace it becomes `Failed`, with the job's
+error if there is one, or a pointer at the pipeline's dispatch settings, and
+the admin is notified. A pending entry's `waiting_reason` (why Bambuddy has not
+started it) is surfaced as the ticket's message too, because a `Ready` ticket
+that is quietly stuck needs the owner's eyes.
 
-`request.formData()` buffers the entire body before a line of this app's code
-runs, so peak memory is decided by how many large uploads overlap — not by
-anything the validator does. The security audit named the two answers: a
-streaming parse, or a size-based queue. This is the queue: at most two uploads
-are handled at once (`MAX_CONCURRENT_UPLOADS`), a third waits rather than being
-refused, and only a long queue gets a `503`.
+Each change notifies the requester, tells the owner when a ticket is `Ready`,
+and writes a `story.status_changed` audit row. The Bambuddy ids behind a ticket
+(`libraryFileId`, `pipelineRunId`, `slicedLibraryFileId`, `queueItemId`,
+`archiveId`) are never selected into what the pages or the API render.
 
-The streaming parse is the better answer and it is not reachable from here. It
-needs the file to stop arriving as multipart at all — a raw body with the wish
-in a header, or a two-phase upload — because by the time a route handler can
-see the request, the framework has already buffered it. That is a protocol
-change touching the form, the API, the OpenAPI document and two suites, and it
-is worth doing the day the queue is the thing that hurts.
+### The sync, and what schedules it
+
+`POST /api/cron/sync` runs `syncOpenStories`: `processIntake` for anything still
+`Requested`, `syncStory` for everything else that is open, one story at a
+time. It has no session, because nothing it does is a person's action. It is
+authorised by `CRON_SECRET` in an `Authorization: Bearer` header, compared in
+constant time, and a missing secret refuses every request rather than falling
+open.
+
+**Nothing in the stack calls it.** A deployment has to: a host crontab entry
+curling it every few minutes is enough (see [Deployment](deployment.md#bambuddy-and-the-sync)).
+Without it, tickets still get their first move from intake's own poll, and then
+stop wherever they were.
+
+### What is deliberately not handled yet
+
+- **Withdrawing or declining after the handoff.** Once a ticket is `Slicing`,
+  Bambuddy holds a library file and possibly a queue entry. Tearing those down
+  is real work this app does not do yet, so withdraw is `Requested`/`Declined`
+  only and decline is `Requested` only. Past that, the requester asks the owner,
+  and the owner cancels in Bambuddy.
+- **One pipeline, one material.** A second material means a second pipeline and
+  a way to choose between them; nothing here pretends otherwise.
+- **The owner's review happens in Bambuddy.** The queue page lists `Ready`
+  tickets and those that need a look, but starting a print is done in Bambuddy's
+  own UI, on purpose: this app's key cannot start one.
 
 ## Decisions taken against the handoff
 
@@ -135,16 +153,16 @@ All five are settled, and recorded here so nobody has to re-derive them:
 | Tip pill radius — README §3 says `8px`, the prototype renders `999px` | **8px.** The tokens reserve `999px` for "avatars, dots and status chips only", so two written sources beat the render. |
 | *Printing* column label — README §2 says amber `#79541a`, the prototype uses teal `#0b4340` | **Amber.** The tokens call amber "warning / in-progress only", and Printing is the in-progress state. It also makes the live column findable. |
 | Where declined stories go — `Declined` is not in the flow, so it has no column | **Off the board entirely.** The board is for work that is still moving; the profile at `/me` carries the whole history, declined included. |
-| The whole-board empty state, which the handoff says to ask about | **Minimal.** One quiet panel saying what is true, with the Upload button already above it. No invented onboarding. |
+| The whole-board empty state, which the handoff says to ask about | **Minimal.** One quiet panel saying what is true, with the *Order up* button already above it. No invented onboarding. |
 | Print-time estimates | **Dropped.** See below. |
 
-### The one stat that changed
+### The stats that changed
 
 The handoff's admin profile card is "Printer time given". There is no honest
-number behind it once print-time estimates are gone, so rather than invent
-one it counts something real — how much geometry has actually come off the
-plate, in bytes. Swap it back the day a slicer is wired in and the hours are
-known rather than assumed.
+number behind it, so rather than invent one the admin's cards count things that
+are real and actionable: prints finished, tickets **Ready to print**, and
+tickets that **need a look** (anything carrying an `errorMessage`). An earlier
+version counted bytes of geometry printed; that went with the uploads.
 
 ### Why there is no print-time estimate
 
@@ -155,12 +173,11 @@ of done says nothing should claim to know what the printer is doing, and a
 number someone might plan their afternoon around is the kind of claim it warns
 about.
 
-So the app shows only what it measured: **dimensions and file size**. A story
-in *Printing* says `on the bed` and nothing more.
+So a story in *Printing* says `on the bed` and nothing more.
 
-To add a real one, run `prusa-slicer --export-gcode` in a background job after
-upload and read `; estimated printing time` out of the G-code. `src/lib/models.ts`
-says so at the point where the old heuristic used to live.
+Bambuddy does slice every request now, so a real estimate exists on its side.
+Surfacing it means reading it off the sliced file or the queue entry during
+the sync, and it has not been done yet.
 
 ## The API, and why there is a service layer
 
@@ -186,18 +203,18 @@ Three decisions inside it that look odd on purpose:
 - **The API answers 403 where a page answers 404.** Everywhere else, a surface
   you may not reach returns 404 so that a 403 cannot confirm it exists. That
   reasoning does not survive publishing an OpenAPI document:
-  `/api/stories/{id}/advance` is listed at `/api/openapi.json`, so hiding it is
+  `/api/stories/{id}/decline` is listed at `/api/openapi.json`, so hiding it is
   theatre — and it would tell an honest client their ticket had vanished when
   the truth is that they are not the printer owner. Whether a *ticket* exists
   is still hidden, through the same `storyScope` fragment.
-- **There is no endpoint that sets a status.** `advance` derives the next state
-  rather than accepting one. An endpoint taking a target status is an
-  invitation to skip a step, and the board's whole claim is that it shows where
-  work actually is.
+- **There is no endpoint that sets a status.** Status is derived from
+  Bambuddy (see [Status is derived, not clicked](#status-is-derived-not-clicked)),
+  and `decline` is the only move a person makes. An endpoint taking a target
+  status would let the board claim something the print farm does not know.
 - **Nothing spreads a database row onto the wire.** `src/lib/api.ts` names
-  every field it emits. That is what keeps `storageKey` — the object's name in
-  the bucket — out of every response without anyone having to remember to strip
-  it, and it is what makes a column added tomorrow private by default.
+  every field it emits. That is what keeps the Bambuddy handoff ids out of
+  every response without anyone having to remember to strip them, and it is
+  what makes a column added tomorrow private by default.
 
 The document at `/api/openapi.json` is assembled per request from two halves:
 the app's own paths, written out, with request bodies converted from the same
@@ -222,8 +239,8 @@ something anyone opens twice.
 
 So three panels sit above the log, in `src/lib/dashboard.ts`. They answer the
 questions a person arrives with, none of which a log answers by being scrolled:
-**is anything being refused**, **where is work piling up**, and **what should I
-buy**.
+**is anything being refused**, **where is work piling up**, and **what filament
+is being asked for**.
 
 Two rules held while building them, and they are the interesting part:
 
@@ -233,7 +250,7 @@ Two rules held while building them, and they are the interesting part:
   `story.status_changed` was already carrying. A dashboard that needs its own
   schema has stopped being a view and started being a feature.
 - **Events from the trail, work from the tables.** The refusals panel reads
-  `AuditEvent`; the material, colour and size panel reads `Story`. The audit
+  `AuditEvent`; the material and colour panel reads `Story`. The audit
   trail is a log, not a warehouse, and querying it for things the domain tables
   already know is how a log slowly turns into a schema nobody meant to design.
 
@@ -251,7 +268,7 @@ notifications and audit trail as a print — see
 It is built as a deliberate **parallel** of the print backlog, not folded into
 it. There is a `FeatureRequest`/`FeatureComment` pair of tables and a
 `src/lib/features.ts` service that mirrors `stories.ts` operation-for-operation;
-`Story`, the upload, the viewer and the JSON API are untouched, with no `kind`
+`Story`, intake and the JSON API are untouched, with no `kind`
 flag threading feature logic through them. The pure rules sit beside the print
 ones in `scope.ts` — `featureScope`, `FEATURE_FLOW`, `assertFeatureTransition`,
 `featureRef` — and are kept parallel rather than merged into one generic helper
@@ -273,25 +290,26 @@ Several features that came after are deliberately additions on top of the two
 backlogs rather than new subsystems, each covered by the verify suite for its
 side:
 
-- **Withdraw reaches `Accepted`, and a past print can be re-queued.** The
-  withdraw window widened from `Requested`/`Declined` to include `Accepted`
-  (before the bed is committed). `requeueStory` clones an old ticket into a
-  fresh `Requested` one, copying the file server-side (`copyModel`) to a new
-  object so the two own independent bytes.
-- **`/history`** is a scoped read of the finished prints (`Delivery`/`Done`/
-  `Declined`) through the same `storyScope`, filtered by status/material/date,
-  with the re-queue control on each row. `/board` and `/me` are untouched.
+- **A past print can be re-queued.** `requeueStory` clones an old ticket into
+  a fresh `Requested` one with the same link, spool and wish fields, and none
+  of the old Bambuddy ids: the sync resolves and imports the link again rather
+  than trusting a library file or queue entry that may be gone. (Withdraw once
+  reached `Accepted` too; that status no longer exists, and withdraw is back to
+  `Requested`/`Declined` — see [intake](#what-is-deliberately-not-handled-yet).)
+- **`/history`** is a scoped read of the finished prints (`Done`/`Failed`/
+  `Declined`) through the same `storyScope`, filtered by status, material and
+  date, with the re-queue control on each row.
 - **The benefits (tips) are owner-managed data**, not a constant: a `Benefit`
   table the owner edits at `/admin/benefits`, seeded with the original five.
-  `Story.tip` stays a plain string so a past request survives an edit, and the
-  upload endpoint validates the tip against the current *active* list — the
-  catalogue, not the form, is authoritative.
+  `Story.tip` stays a plain string so a past request survives an edit. The new
+  intake form does not ask for a tip, so for now the catalogue has no caller
+  on the request side.
 - **A feature request's priority is editable in any status, and both `/frr`
   views filter** by priority/status/category. The filter is ANDed onto
   `featureScope`, so it can only ever narrow a caller's own set.
-- **An optional free-text print-settings field** rides along on a request and
-  shows on the ticket for the owner. The structured / access-gated "advanced
-  mode" is deferred.
+- **An optional free-text note** rides along on a request and shows on the
+  ticket for the owner. Slicer settings themselves belong to the pipeline in
+  Bambuddy, not to the request.
 
 ## What is deliberately not built
 
@@ -324,11 +342,13 @@ src/app/
   set-password/          where a reset link lands; sets no session
   welcome/               passkey enrolment after registration
   admin/invites/         the guest list (admin only)
-  scope.ts               pure authorisation predicates (no server-only)
+src/lib/
+  scope.ts               pure rules: scopes, flows, deriveStatus (no server-only)
   csp.ts                 Content-Security-Policy builder + nonce
   audit.ts               the append-only trail
-  storage.ts             S3/MinIO, signed URLs, generated keys
-  catalog.ts             the fixed choices a request is made from
+  bambuddy.ts            the Bambuddy client — resolve, import, slice, queue, spools
+  bambuddy-sync.ts       intake handoff and status sync; nothing here takes an Actor
+  catalog.ts             quantity presets and the seed tips
   stories.ts             every operation on a ticket — the rules, once
   notifications.ts       the Activity feed, scoped by recipient
   api.ts                 the JSON boundary: 401/403, Origin, wire format
@@ -337,10 +357,11 @@ src/app/
   benefits.ts            the owner-managed benefits (tip) catalogue
 src/app/
   board/                 the kanban backlog, scoped per role
-  upload/                dropzone, wish form, XHR progress
+  upload/                the intake form: link, live spool picker, wish
   story/[id]/            story detail (read half)
-  api/upload/            validation, storage, story creation
-  api/stories/           the tickets, the flow, the conversation
+  queue/                 the owner's view: needs a look, ready to print
+  api/stories/           the tickets, intake, decline, flag, the conversation
+  api/cron/sync/         the scheduled Bambuddy sync, behind CRON_SECRET
   api/notifications/     the Activity feed
   api/openapi.json/      the document
   docs/                  the Swagger console (a route, not a page)
@@ -350,7 +371,7 @@ scripts/
   deploy-wizard.sh       pick an image, verify it, deploy, auto-rollback
   vendor-swagger.ts      copies Swagger UI into public/docs at build time
   verify-auth.ts         registration, sign-in and password reset
-  verify-upload.ts       upload -> board -> story
+  verify-queue.ts        the owner's queue, decline, flag, withdraw, re-queue
   verify-passkey.ts      WebAuthn in a real browser
   verify-api.ts          the JSON API, the document and the console
   verify-frr.ts          the feature-request track, filed and triaged

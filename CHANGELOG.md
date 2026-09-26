@@ -255,6 +255,28 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Changed
 
+- **A request is a MakerWorld link, sliced and queued by Bambuddy.** File
+  upload is gone: no `.stl`/`.3mf` validator, no object storage, no 3D viewer,
+  no download and no "Open in PrusaSlicer". Instead the form takes a MakerWorld
+  model page and a colour picked from the PLA spools Bambuddy reports in stock,
+  and the app hands the request to Bambuddy, which imports it, slices it on one
+  PLA Slicer Pipeline and queues it. Every queue entry is switched to manual
+  start within seconds, so nothing prints until somebody starts it.
+
+  The flow is now **Requested → Slicing → Ready → Printing → Done**, with
+  `Failed` and `Declined` to the side, and it is read from Bambuddy rather than
+  clicked forward: `advance` and its API endpoint are gone, and `Accepted` and
+  `Delivery` no longer exist. `POST /api/stories` replaces `POST /api/upload`.
+  Withdraw is back to `Requested`/`Declined` only, because past that Bambuddy
+  holds state the app does not yet tear down.
+
+  **Deploying this needs new configuration.** `BAMBUDDY_URL`,
+  `BAMBUDDY_API_KEY`, `BAMBUDDY_PIPELINE_ID` and `CRON_SECRET` are required,
+  and something has to call `POST /api/cron/sync` on a schedule: nothing in the
+  stack does. See [Bambuddy and the sync](docs/deployment.md#bambuddy-and-the-sync).
+  MinIO is still in the compose files but unused, and `$DATA_ROOT/models/` only
+  holds files from before the change.
+
 - **"Feature requests" in the nav, and it goes to the board.** The owner's nav
   item was labelled *Requests* and pointed at `/frr/queue`, the triage view —
   so the owner's way in was the work list while everyone else's was the board.

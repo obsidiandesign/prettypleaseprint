@@ -7,9 +7,10 @@
 [![Forks](https://img.shields.io/github/forks/danileau/prettypleaseprint?style=flat)](https://github.com/danileau/prettypleaseprint/network/members)
 
 **Invite-only 3D print requests for a small office.** One person owns the
-printer. Everyone else uploads a model, says what they are hoping for, and
-follows it through the print stages on a board — instead of asking in a
-corridor and then wondering.
+printer. Everyone else pastes a MakerWorld link, picks a colour that is
+actually on the shelf, and follows the request on a board while
+[Bambuddy](docs/architecture.md#intake-a-link-handed-to-bambuddy) slices and
+queues it — instead of asking in a corridor and then wondering.
 
 Self-hosted, Docker Compose, no accounts anywhere but your own machine. Five
 people and one printer is the size it is built for, and it is honest about
@@ -21,51 +22,50 @@ that: there is no multi-tenancy, no billing, and no queue theory.
 | :-- |
 | ![The backlog board](docs/screenshots/board.png) |
 
-| A ticket, with the actual uploaded geometry | The printer owner's queue |
+| A ticket and its conversation | The printer owner's queue |
 | :-- | :-- |
-| ![Story detail with the 3D viewer](docs/screenshots/story.png) | ![The admin queue](docs/screenshots/queue.png) |
+| ![Story detail](docs/screenshots/story.png) | ![The admin queue](docs/screenshots/queue.png) |
 
 ## What it does
 
 - **Invite-only.** There is no public sign-up. A `User` row cannot come into
   existence without a pending invitation, enforced in a single hook that every
   authentication method goes through.
-- **Upload a model** — `.stl` or `.3mf`, validated against its actual bytes
-  rather than its filename, measured for its bounding box, stored in object
-  storage and never in the web root.
-- **Follow it on a board** — Requested → Accepted → Printing → Delivery, one
-  step at a time, forwards only. Or Declined, with a reason. Marking it **Done**
-  takes it off the board while keeping it in *My orders*, so the rail carries
-  only what is still moving.
-- **Withdraw your own request** any time before it reaches the bed — while it
-  is Requested, Accepted or Declined, but not once it is Printing. The ticket,
-  the conversation and the uploaded file go with it. Plans change; unwanted
-  prints waste filament.
+- **Ask with a link** — paste a MakerWorld model page, pick a colour from the
+  PLA spools Bambuddy says are in stock right now, say how many and by when.
+  No file to find, export or upload.
+- **Sliced and queued without anyone clicking** — the request goes straight to
+  Bambuddy, which imports the model, slices it on the one PLA pipeline and
+  puts it in the print queue. The app makes sure that queue entry **waits for
+  a person** rather than starting on its own the moment a printer is free.
+- **Follow it on a board** — Requested → Slicing → Ready → Printing → Done, read
+  from Bambuddy rather than clicked forward, so the board shows where the work
+  actually is. When something goes wrong the ticket says `Failed` with
+  Bambuddy's own reason, not "something went wrong". The printer owner can
+  still Decline a request before it is sent.
+- **Withdraw your own request** while it is still Requested or Declined —
+  before Bambuddy holds anything for it. Past that, ask the printer owner, who
+  cancels it in Bambuddy.
 - **Print an old request again** — re-queue any past ticket of yours (a test
-  print that worked, a declined one you have fixed) as a fresh request, without
-  hunting down and re-uploading the file. The model is copied server-side, so
-  the two tickets own independent files.
-- **Note print settings** — an optional free-text field on a request for the
-  slicer specifics that come with some files (layer height, infill, supports,
-  temperatures). The printer owner sees them on the ticket, so they do not
-  become a back-and-forth, and a re-print keeps them.
+  print that worked, a declined one you have rethought) as a fresh request,
+  same link and colour, without pasting anything.
+- **Leave a note** — an optional free-text field on a request ("needs to
+  survive a bit of pulling"). The printer owner sees it on the ticket, and a
+  re-print keeps it.
 - **Browse your history** — a dedicated `/history` view of the prints that have
-  left the rail (delivered, done, declined), filterable by status, material and
+  left the rail (done, failed, declined), filterable by status, material and
   when, with **Print again** on every row. It is where you go to re-run an old
   job.
 - **Talk on the ticket** — a conversation thread per request, so "can you do it
   in teal" lives with the model rather than in a chat app.
 - **Owner-managed benefits** — the "what's in it for you" tips are the printer
-  owner's to define at `/admin/benefits`, and the ones they mark *preferred* are
-  starred on the upload form so people know what the owner actually wants. Editing
-  or retiring a benefit never rewrites a past request's tip.
+  owner's to define at `/admin/benefits`. The new intake form does not ask for
+  one yet; past requests keep theirs.
 - **Revoke access when someone leaves** — suspends the account, signs them out
   everywhere and refuses new sign-ins, while keeping their tickets, comments
   and history. Reversible, and audited.
-- **See the actual geometry** — the uploaded mesh rendered in the browser,
-  auto-framed, drag to rotate.
 - **An audit trail** of everything that changes who can get in or what happens
-  to someone's model, readable at `/admin/audit`, never edited or deleted.
+  to someone's request, readable at `/admin/audit`, never edited or deleted.
 - **Ask for features, triaged like the backlog** — a parallel "frr" board at
   `/frr` where anyone files a feature request (title, priority, category) and
   the owner moves it through the same stages, conversation, notifications and
@@ -76,24 +76,15 @@ that: there is no multi-tenancy, no billing, and no queue theory.
   Swagger console at `/docs`. Same session, same scope, same audit trail as the
   UI; the rules live in one place, so the API cannot enforce less than the
   board does. See **[the API](docs/api.md)**.
-- **Open a model straight in PrusaSlicer** — one click on a ticket hands the
-  model to a slicer running on your own machine. A small helper the printer
-  owner installs once does the fetch, because PrusaSlicer's own deep link
-  refuses any host but Printables. The link carries its own short-lived
-  credential, so nothing secret sits in the helper's config.
-  See **[Open in PrusaSlicer](docs/prusaslicer.md)**.
-- **Or just take the file** — a plain download on every ticket, for a machine
-  without the helper, a phone, or a slicer that is not PrusaSlicer. Same
-  permissions as the ticket, and recorded when the bytes go to somebody other
-  than the person who uploaded them.
 
 ## Requirements
 
 | | |
 | --- | --- |
 | Host | anything that runs Docker Compose — a NAS, a Pi 5, a VPS, a spare laptop |
-| Memory | ~1 GB for the whole stack (app, Postgres, MinIO) |
-| Disk | small — the database is megabytes; uploads are capped at 250 MB each |
+| Printer side | a [Bambuddy](docs/deployment.md#bambuddy-and-the-sync) instance the app can reach, with a Slicer Pipeline set up for PLA and Bambu Cloud signed in for MakerWorld downloads |
+| Memory | ~1 GB for the whole stack |
+| Disk | small — the database is megabytes, and no model files are stored |
 | TLS | **required.** The app refuses to start on plain `http://` in production, and passkeys need a secure context |
 | Mail | **optional.** Nothing needs it — see [Mail is optional](docs/authentication.md#mail-is-optional--genuinely) |
 
@@ -104,18 +95,24 @@ git clone https://github.com/danileau/prettypleaseprint.git && cd prettypleasepr
 cp .env.docker.example .env.docker
 ```
 
-Edit `.env.docker` — at minimum generate the three secrets and set your
-hostname and admin:
+Edit `.env.docker` — at minimum generate the secrets, set your hostname and
+admin, and point it at Bambuddy:
 
 ```bash
 BETTER_AUTH_SECRET="$(openssl rand -base64 32)"
 DB_PASSWORD="$(openssl rand -hex 24)"
-S3_SECRET_KEY="$(openssl rand -hex 24)"
+S3_SECRET_KEY="$(openssl rand -hex 24)"   # still required by the compose file, unused
+CRON_SECRET="$(openssl rand -base64 32)"
 APP_URL="https://print.example.org"
 PASSKEY_RP_ID="print.example.org"
 ADMIN_EMAIL="you@example.org"
 ADMIN_NAME="Your Name"
+BAMBUDDY_URL="http://192.168.1.20:8000"
+BAMBUDDY_API_KEY="..."        # Manage Library + Manage Queue only
+BAMBUDDY_PIPELINE_ID="1"
 ```
+
+Then schedule the sync — see [Bambuddy and the sync](docs/deployment.md#bambuddy-and-the-sync).
 
 Then bring it up. This build-from-source variant publishes ports and catches
 mail locally, which is what you want for a first look:
@@ -150,14 +147,16 @@ with commentary is [`.env.docker.example`](.env.docker.example).
 | --- | --- | --- |
 | `BETTER_AUTH_SECRET` | **yes** | Signs session cookies. `openssl rand -base64 32`. Losing it invalidates every session. |
 | `DB_PASSWORD` | **yes** | Postgres password. Baked into the data directory on first start — see [Restore](#restore). |
-| `S3_SECRET_KEY` | **yes** | MinIO root password. |
-| `S3_ACCESS_KEY` | | MinIO root user. Default `ppp`. |
-| `S3_BUCKET` | | Default `ppp-models`. |
+| `BAMBUDDY_URL` | **yes** | Bambuddy's address on the LAN, e.g. `http://192.168.1.20:8000`. Never a public URL. |
+| `BAMBUDDY_API_KEY` | **yes** | A Bambuddy API key with **Manage Library + Manage Queue** only — no Control Printer — ideally on a dedicated service account. |
+| `BAMBUDDY_PIPELINE_ID` | **yes** | The Slicer Pipeline every request is sliced with. It must be a PLA recipe: the form only offers PLA spools. |
+| `CRON_SECRET` | **yes** | Bearer secret for `POST /api/cron/sync`. `openssl rand -base64 32`. Unset, the sync refuses every call. |
+| `S3_SECRET_KEY` | *compose* | MinIO root password. Nothing in the app uses MinIO any more, but the compose file still starts it and refuses to run without this. |
 | `APP_URL` | **yes** | The origin the browser sees, including scheme. Cookies, invitation links and the WebAuthn relying party derive from it. Must be `https://` in production. |
 | `PASSKEY_RP_ID` | **yes** | Registrable domain, no scheme or port. **Permanent** — changing it kills every enrolled passkey. |
 | `PASSKEY_RP_NAME` | | Shown in the browser's passkey prompt. |
 | `ADMIN_EMAIL` / `ADMIN_NAME` | **yes** | The single admin, created on first start. |
-| `DATA_ROOT` | | Where the database and uploads live on disk. Default `./data`. |
+| `DATA_ROOT` | | Where the database lives on disk. Default `./data`. |
 | `SMTP_URL` | | SMTP transport. **Leave unset and the app still works** — links are shown to the admin to hand over. |
 | `RESEND_API_KEY` | | Alternative to `SMTP_URL`; takes precedence. |
 | `MAIL_FROM` | | Envelope sender. |
@@ -211,7 +210,7 @@ Everything that matters is under `DATA_ROOT` plus one file:
 | | |
 | --- | --- |
 | `$DATA_ROOT/db/` | Postgres — accounts, tickets, comments, the audit trail |
-| `$DATA_ROOT/models/` | the uploaded `.stl` / `.3mf` files |
+| `$DATA_ROOT/models/` | model files from before link intake. Nothing new is written here; keep it only if you want the old uploads |
 | `.env.docker` | the secrets. **Not** under `DATA_ROOT`, and not in the repo. |
 
 On ZFS, one recursive snapshot of the parent dataset captures all three:
@@ -367,15 +366,14 @@ has no outbound internet, set `HIBP_DISABLED=true` — and only then.
 | | |
 | --- | --- |
 | **[Authentication](docs/authentication.md)** | invite-only registration, passwords, passkeys, resets, and why each decision went the way it did |
-| **[Architecture](docs/architecture.md)** | the viewer, upload validation, decisions taken against the design handoff, and the file layout |
+| **[Architecture](docs/architecture.md)** | link intake and the Bambuddy sync, decisions taken against the design handoff, and the file layout |
 | **[Deployment](docs/deployment.md)** | containers, reverse proxies, the deploy wizard, TLS, first run |
 | **[Feature requests](docs/feature-requests.md)** | the `/frr` track — file a request, triage it exactly like the print backlog |
 | **[The API](docs/api.md)** | the JSON surface, bearer tokens, the OpenAPI document and the console at `/docs` |
-| **[Open in PrusaSlicer](docs/prusaslicer.md)** | the one-click "send to the slicer" bridge, the helper, and why the deep link cannot be used |
 | **[Development](docs/development.md)** | stack, local setup, the verification suites, CI |
 | **[Security audit](docs/security-audit.md)** | the OWASP Top 10 assessment, findings, and residual risk accepted |
 | **[Security policy](SECURITY.md)** | how to report a vulnerability |
-| **[Contributing](CONTRIBUTING.md)** | the eight suites are the contract; what a good change looks like |
+| **[Contributing](CONTRIBUTING.md)** | the verification suites are the contract; what a good change looks like |
 | **[Changelog](CHANGELOG.md)** | what changed in each release |
 
 ## Security
@@ -406,10 +404,11 @@ something, see [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
-Issues and pull requests are welcome. The eight verification suites in
-`scripts/` are the contract — `npm run verify:auth`, `verify:upload`,
-`verify:queue`, `verify:passkey` and `probe:security` all run
-in CI against the built container image, not a dev server. If a change makes
+Issues and pull requests are welcome. The verification suites in `scripts/`
+are the contract — `npm run verify:auth`, `verify:queue`, `verify:frr`,
+`verify:benefits`, `verify:api`, `verify:passkey` and `probe:security` all run
+in CI against the built container image, not a dev server. CI has no Bambuddy,
+so the checks that need one skip rather than pass. If a change makes
 one fail, that is the change talking.
 
 See [docs/development.md](docs/development.md) to get set up.
