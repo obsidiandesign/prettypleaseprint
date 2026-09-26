@@ -83,41 +83,12 @@ function findForm(html: string, contains: string[]): number {
   return forms.findIndex((f) => contains.every((s) => f.includes(s)));
 }
 
-/** A real 12-triangle binary STL so an upload can reach the happy path. */
-function stlBox(x: number, y: number, z: number): Uint8Array {
-  const p = [[0,0,0],[x,0,0],[x,y,0],[0,y,0],[0,0,z],[x,0,z],[x,y,z],[0,y,z]];
-  const faces = [[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,4,5],[0,5,1],
-                 [1,5,6],[1,6,2],[2,6,7],[2,7,3],[3,7,4],[3,4,0]];
-  const tris = faces.map((f) => f.flatMap((i) => p[i]!));
-  const buf = new Uint8Array(84 + tris.length * 50);
-  const view = new DataView(buf.buffer);
-  view.setUint32(80, tris.length, true);
-  let off = 84;
-  for (const t of tris) {
-    for (let i = 0; i < 9; i++) view.setFloat32(off + 12 + i * 4, t[i]!, true);
-    off += 50;
-  }
-  return buf;
-}
-
 async function signIn(user: { id: string; email: string }): Promise<Browser> {
   const b = new Browser();
   await db.$executeRawUnsafe('DELETE FROM "rateLimit"');
   await ensureCredentials(APP, user.id, usernameFor(user.email));
   await signInWithPassword(b, APP, usernameFor(user.email));
   return b;
-}
-
-async function uploadWith(client: Browser, tip: string) {
-  const form = new FormData();
-  form.set("file", new File([stlBox(20, 20, 20) as BlobPart], "part.stl"));
-  form.set("title", "Tip test");
-  form.set("material", "PLA");
-  form.set("colorName", "Teal");
-  form.set("quantity", "1");
-  form.set("tip", tip);
-  form.set("note", "");
-  return client.raw(`${APP}/api/upload`, { method: "POST", body: form });
 }
 
 async function main() {
@@ -198,30 +169,26 @@ async function main() {
         (await db.benefit.findUnique({ where: { id: beer!.id } }))?.active === true);
 
   // ------------------------------------------------------------------
-  section("the upload form shows the owner's list and preferences");
+  // The tip jar doesn't fit a link-first, family-facing intake form the way
+  // it fit an office upload form — see the note where Story.tip's schema
+  // comment lives. It's deliberately not wired into src/app/upload/upload-
+  // form.tsx while it's decided whether/how to repurpose it, so what's worth
+  // asserting here is that absence, not a validation path that no longer
+  // exists (there is no more "the server decides the tip" — CreateStorySchema
+  // has no tip field at all).
+  section("the tip jar is not offered on the new intake form");
   const uploadPage = await (await client.go(`${APP}/upload`)).text();
-  check("it renders benefits from the list", uploadPage.includes("A coffee") && uploadPage.includes("A big pizza"));
-  check("and names what the owner prefers", uploadPage.includes("currently prefers") && uploadPage.includes("A big pizza"));
-  check("a retired benefit is not offered", !uploadPage.includes(">A beer<") ? true : uploadPage.includes("A beer"));
-
-  // ------------------------------------------------------------------
-  section("the server, not the form, decides the tip");
-  const good = await uploadWith(client, "A coffee");
-  check("an upload with a live benefit is accepted", good.status === 200, `status ${good.status}`);
-  const bogus = await uploadWith(client, "A yacht, obviously");
-  check("an upload with an off-list tip is refused (400)", bogus.status === 400, `status ${bogus.status}`);
-  // Retire "A coffee", then it too is refused.
-  await db.benefit.update({ where: { label: "A coffee" }, data: { active: false } });
-  const retiredTip = await uploadWith(client, "A coffee");
-  check("an upload with a retired benefit is refused", retiredTip.status === 400, `status ${retiredTip.status}`);
+  check("the intake form does not render the benefit catalogue",
+        !uploadPage.includes("A big pizza") && !uploadPage.includes("currently prefers"),
+        "a tip-jar section reappeared on /upload — repurposed on purpose, or a stale import?");
 
   // ------------------------------------------------------------------
   section("history keeps the tip it was made with");
   const past = await db.story.create({
     data: {
       title: "Old order", uploaderId: ayla.id, colorName: "Slate", colorHex: "#4a5d78",
-      tip: "A beer", filename: "p.stl", fileSize: 1, mimeType: "model/stl", storageKey: "k-history",
-      material: "PETG", quantity: 1, note: "",
+      tip: "A beer", material: "PETG", quantity: 1, note: "",
+      modelUrl: "https://makerworld.com/en/models/000000-history-fixture",
     },
   });
   await db.benefit.deleteMany({ where: { label: "A beer" } }); // remove it from the list entirely

@@ -41,55 +41,13 @@ async function signIn(page: Page, user: { id: string; email: string }): Promise<
   await page.waitForFunction(() => location.pathname !== "/signin", { timeout: 15_000 });
 }
 
-/** A cookie jar for the one thing that is not driven through the browser. */
-async function sessionCookie(user: { id: string; email: string }): Promise<string> {
-  await db.$executeRawUnsafe('DELETE FROM "rateLimit"');
-  await ensureCredentials(APP, user.id, usernameFor(user.email));
-  const res = await fetch(`${APP}/api/auth/sign-in/username`, {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: APP },
-    body: JSON.stringify({
-      username: usernameFor(user.email),
-      password: TEST_PASSWORD,
-    }),
-  });
-  const jar = new Map<string, string>();
-  for (const line of res.headers.getSetCookie()) {
-    const [pair] = line.split(";");
-    const eq = pair!.indexOf("=");
-    jar.set(pair!.slice(0, eq), pair!.slice(eq + 1));
-  }
-  return [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
-}
-
-/**
- * A real 12-triangle STL. The seeded tickets point at storage keys that do
- * not exist, which is fine for the rail but useless for the viewer — it needs
- * bytes it can actually parse.
- */
-function stlBox(x: number, y: number, z: number): Uint8Array {
-  const p = [[0,0,0],[x,0,0],[x,y,0],[0,y,0],[0,0,z],[x,0,z],[x,y,z],[0,y,z]];
-  const faces = [[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,4,5],[0,5,1],
-                 [1,5,6],[1,6,2],[2,6,7],[2,7,3],[3,7,4],[3,4,0]];
-  const tris = faces.map((f) => f.flatMap((i) => p[i]!));
-  const buf = new Uint8Array(84 + tris.length * 50);
-  const view = new DataView(buf.buffer);
-  view.setUint32(80, tris.length, true);
-  let off = 84;
-  for (const t of tris) {
-    for (let i = 0; i < 9; i++) view.setFloat32(off + 12 + i * 4, t[i]!, true);
-    off += 50;
-  }
-  return buf;
-}
-
 /** One ticket per stage, so every rail colour and state is on screen at once. */
 const SEED = [
   ["Hook for the monitor arm", "Requested", "PETG", "Slate", "#4a5d78", "A beer", 1, false],
-  ["Cable comb, 6 slots", "Accepted", "PLA", "Graphite", "#1b2126", "A coffee", 4, true],
+  ["Cable comb, 6 slots", "Slicing", "PLA", "Graphite", "#1b2126", "A coffee", 4, true],
   ["Replacement knob, grinder", "Printing", "PETG", "Teal", "#12645f", "A spool of filament", 2, false],
   ["Desk sign, meeting room", "Done", "PLA", "Bone white", "#eaecee", "Nerd stuff", 1, false],
-  ["Gridfinity bin, 2×1", "Delivery", "PLA", "Slate", "#4a5d78", "A beer", 6, false],
+  ["Gridfinity bin, 2×1", "Ready", "PLA", "Slate", "#4a5d78", "A beer", 6, false],
 ] as const;
 
 async function main() {
@@ -111,11 +69,12 @@ async function main() {
   for (const [title, status, material, colorName, colorHex, tip, qty, flagged] of SEED) {
     await db.story.create({
       data: {
-        title, status: status as never, material: material as never,
-        colorName, colorHex, tip, quantity: qty, flagged,
+        title, status: status as never, material, colorName, colorHex, tip,
+        quantity: qty, flagged,
         note: "Clips onto the round arm tube and holds a headset. No rush.",
-        uploaderId: ayla.id, filename: "monitor-hook-v3.stl", fileSize: 2_517_000,
-        mimeType: "model/stl", storageKey: "demo", dims: "78 × 40 × 22 mm",
+        uploaderId: ayla.id,
+        modelUrl: "https://makerworld.com/en/models/000000-demo-fixture",
+        resolvedTitle: title,
       },
     });
   }
@@ -134,43 +93,15 @@ async function main() {
     });
   }
 
-  // Put real geometry behind the Printing ticket so the viewer has something
-  // to draw. Uploading it through the API is also the honest path — it goes
-  // through the same validation and storage every real file does.
-  const printingForUpload = await db.story.findFirst({ where: { status: "Printing" } });
-  if (printingForUpload) {
-    const cookie = await sessionCookie(ayla);
-    const form = new FormData();
-    form.set("file", new File([stlBox(78, 40, 22) as BlobPart], "monitor-hook-v3.stl"));
-    form.set("title", "Replacement knob, grinder");
-    form.set("material", "PETG");
-    form.set("colorName", "Teal");
-    form.set("quantity", "2");
-    form.set("tip", "A spool of filament");
-    form.set("note", "Clips onto the round arm tube and holds a headset. No rush.");
-    const up = await fetch(`${APP}/api/upload`, {
-      method: "POST", body: form, headers: { origin: APP, cookie },
-    });
-    if (up.ok) {
-      const created = await up.json();
-      // Promote it into Printing and retire the placeholder.
-      await db.story.delete({ where: { id: printingForUpload.id } });
-      await db.story.update({
-        where: { id: created.id },
-        data: { status: "Printing", colorHex: "#12645f" },
-      });
-    }
-  }
-
   // One declined ticket, so the profile shows what the rail deliberately
   // does not carry.
   await db.story.create({
     data: {
       title: "Bracket that was too thin", uploaderId: ayla.id, status: "Declined",
       material: "PLA", colorName: "Bone white", colorHex: "#eaecee",
-      tip: "Nothing, sorry", quantity: 1, filename: "bracket-v1.stl",
-      fileSize: 640_000, mimeType: "model/stl", storageKey: "declined-demo",
-      dims: "60 × 20 × 3 mm",
+      tip: "Nothing, sorry", quantity: 1,
+      modelUrl: "https://makerworld.com/en/models/000000-declined-fixture",
+      resolvedTitle: "Bracket that was too thin",
     },
   });
 

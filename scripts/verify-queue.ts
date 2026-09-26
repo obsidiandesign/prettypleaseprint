@@ -12,7 +12,7 @@ import "./_env";
  */
 import { db } from "../src/lib/db";
 import { clientIpFrom, ipSource } from "../src/lib/client-ip";
-import { BOARD, nextStatus, storyRef as storyRefOf } from "../src/lib/scope";
+import { BOARD, isTerminal, storyRef as storyRefOf } from "../src/lib/scope";
 import { ensureCredentials, signInWithPassword, usernameFor } from "./_accounts";
 
 const APP = process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
@@ -123,8 +123,8 @@ async function makeStory(uploaderId: string, title: string, status = "Requested"
     data: {
       title, status: status as never, uploaderId,
       material: "PETG", colorName: "Slate", colorHex: "#4a5d78", tip: "A beer",
-      quantity: 1, note: "", filename: "part.stl", fileSize: 1234,
-      mimeType: "model/stl", storageKey: `k-${title}`, dims: "10 × 10 × 10 mm",
+      quantity: 1, note: "",
+      modelUrl: `https://makerworld.com/en/models/000000-${encodeURIComponent(title)}`,
     },
   });
 }
@@ -165,60 +165,45 @@ async function main() {
         rendered(await adminHome.text()).includes("queue"));
 
   // ------------------------------------------------------------------
-  section("accepting a ticket");
-  const story = await makeStory(ayla.id, "Hook for the monitor arm");
-  let page = await (await ruben.go(`${APP}/queue`)).text();
-  check("it shows up under Waiting on you",
-        page.includes("Waiting on you") && page.includes("Hook for the monitor arm"));
-  check("with the wish spelled out", rendered(page).includes("offers A beer"),
-        "the wish line did not render as expected");
-
-  const acceptIdx = formIndexContaining(page, "Accept it");
-  const accepted = await ruben.submit(`${APP}/queue`, page, acceptIdx, {});
-  check("accept redirects with a result",
-        accepted.status >= 300 && accepted.status < 400,
-        `status ${accepted.status}`);
-
-  let row = await db.story.findUnique({ where: { id: story.id } });
-  check("Requested -> Accepted", row?.status === "Accepted", String(row?.status));
-  check("the uploader was notified",
-        (await db.notification.count({ where: { recipientId: ayla.id, storyId: story.id } })) === 1);
-  check("and it was audited",
-        (await db.auditEvent.count({ where: { action: "story.status_changed" } })) === 1);
-  // `+` is form encoding for a space; decodeURIComponent leaves it alone,
-  // so the message has to be read with URLSearchParams.
-  check("the toast names the person told",
-        paramOf(accepted.headers.get("location"), "toast").includes("Ayla Berg notified"),
-        paramOf(accepted.headers.get("location"), "toast"));
-
-  // ------------------------------------------------------------------
-  section("the flow only moves forward, one step at a time");
-  for (const expected of ["Printing", "Delivery", "Done"]) {
-    page = await (await ruben.go(`${APP}/queue`)).text();
-    const idx = formIndexContaining(page, `Move to ${expected}`);
-    check(`the only offer is "Move to ${expected}"`, idx >= 0);
-    if (idx < 0) break;
-    await ruben.submit(`${APP}/queue`, page, idx, {});
-    row = await db.story.findUnique({ where: { id: story.id } });
-    check(`advanced to ${expected}`, row?.status === expected, String(row?.status));
-  }
-
-  // Delivery is the end of the line; posting again must not wrap around.
-  const atEnd = await ruben.raw(`${APP}/queue`, {
-    method: "POST",
-    body: (() => { const f = new FormData(); f.set("id", String(story.id)); f.set("from", "/queue"); return f; })(),
+  section("the queue surfaces what needs a look, not a click to advance");
+  //
+  // There is no more "accept it" — every status but Declined is derived from
+  // Bambuddy's own state (see src/lib/bambuddy-sync.ts), not moved by an
+  // admin clicking a button. What the queue page actually has to do instead:
+  // surface Bambuddy's own errorMessage prominently, and list the Ready
+  // pile as a review list, not a set of buttons.
+  const stuck = await makeStory(ayla.id, "Hook for the monitor arm");
+  await db.story.update({
+    where: { id: stuck.id },
+    data: { errorMessage: "Bambuddy couldn't take this request. It'll retry automatically." },
   });
-  row = await db.story.findUnique({ where: { id: story.id } });
-  check("a bare POST cannot drive an action", row?.status === "Done",
-        `status is now ${row?.status} (raw POST returned ${atEnd.status})`);
+  let page = await (await ruben.go(`${APP}/queue`)).text();
+  check("a story with an error shows up under Needs a look",
+        page.includes("Needs a look") && page.includes("Hook for the monitor arm"));
+  check("with Bambuddy's own message shown",
+        rendered(page).includes("couldn&rsquo;t take this request") || rendered(page).includes("couldn't take this request"),
+        "the errorMessage did not render on the queue page");
+
+  const readyOne = await makeStory(ayla.id, "Cable comb, 6 slots", "Ready");
+  page = await (await ruben.go(`${APP}/queue`)).text();
+  check("a Ready ticket shows up under Ready to print",
+        page.includes("Ready to print") && page.includes("Cable comb, 6 slots"));
+  check("there is no control that moves a ticket's status by hand",
+        !rendered(page).includes("Accept it") && !/Move to \w+/.test(rendered(page)));
+  await db.story.delete({ where: { id: readyOne.id } });
+  await db.story.delete({ where: { id: stuck.id } });
 
   // ------------------------------------------------------------------
   section("declining");
+  // Decline is only ever offered from the story's own page now, not the
+  // queue list — a fresh Requested ticket with no error doesn't get a row
+  // in "Needs a look" or "Ready to print", and the queue's "rest" list is
+  // scan-only. `/story/{id}` still always offers the owner's controls.
   const fresh = await makeStory(ayla.id, "Cable comb, 6 slots");
-  page = await (await ruben.go(`${APP}/queue`)).text();
+  page = await (await ruben.go(`${APP}/story/${fresh.id}`)).text();
   const declineIdx = formIndexContaining(page, "Yes, decline");
-  await ruben.submit(`${APP}/queue`, page, declineIdx, {});
-  row = await db.story.findUnique({ where: { id: fresh.id } });
+  await ruben.submit(`${APP}/story/${fresh.id}`, page, declineIdx, {});
+  let row = await db.story.findUnique({ where: { id: fresh.id } });
   check("Requested -> Declined", row?.status === "Declined", String(row?.status));
   check("declining is audited",
         (await db.auditEvent.count({ where: { action: "story.declined" } })) === 1);
@@ -227,10 +212,10 @@ async function main() {
    * A bare POST carries no action id, so Next never routes it and nothing runs.
    * That makes this a check that a stray POST at the page URL is inert — NOT a
    * check that the transition rule holds, which it would pass even if
-   * `assertTransition` were deleted.
+   * `assertDecline` were deleted.
    *
    * The rule itself is covered, and properly: `verify:api` asserts a 403 for
-   * declining an Accepted ticket, and both front doors call the same
+   * declining a Printing ticket, and both front doors call the same
    * `src/lib/stories.ts`, so the service is exercised either way. Named for
    * what it does rather than what it looks like it does.
    */
@@ -245,7 +230,7 @@ async function main() {
 
   // ------------------------------------------------------------------
   section("flagging");
-  const flagged = await makeStory(ayla.id, "Thin walls somewhere", "Accepted");
+  const flagged = await makeStory(ayla.id, "Thin walls somewhere", "Slicing");
   page = await (await ruben.go(`${APP}/story/${flagged.id}`)).text();
   const flagIdx = formIndexContaining(page, 'name="reason"');
   await ruben.submit(`${APP}/story/${flagged.id}`, page, flagIdx, { reason: "walls are 0.6mm in two spots" });
@@ -253,7 +238,7 @@ async function main() {
   check("the ticket is flagged", row?.flagged === true);
   check("with the reason the admin typed",
         row?.flagReason === "walls are 0.6mm in two spots", row?.flagReason ?? "");
-  check("flagging does NOT change the status", row?.status === "Accepted", String(row?.status));
+  check("flagging does NOT change the status", row?.status === "Slicing", String(row?.status));
   check("the reason reaches the uploader's notification",
         (await db.notification.findFirst({
           where: { recipientId: ayla.id, storyId: flagged.id }, orderBy: { createdAt: "desc" },
@@ -298,7 +283,7 @@ async function main() {
 
   // ------------------------------------------------------------------
   section("the conversation");
-  const talk = await makeStory(ayla.id, "Something to discuss", "Accepted");
+  const talk = await makeStory(ayla.id, "Something to discuss", "Slicing");
 
   // The client writes first.
   let talkPage = await (await client.go(`${APP}/story/${talk.id}`)).text();
@@ -487,7 +472,7 @@ async function main() {
         !boardHtml.includes("Bracket, delivered"),
         "the rail is supposed to carry only what is still moving");
   check("but the board still draws the four live rails",
-        ["Requested", "Accepted", "Printing", "Delivery"].every((c) => boardHtml.includes(c)));
+        ["Requested", "Slicing", "Ready", "Printing"].every((c) => boardHtml.includes(c)));
   check("and Done is not one of them",
         BOARD.length === 4 && !(BOARD as readonly string[]).includes("Done"),
         BOARD.join(", "));
@@ -497,9 +482,8 @@ async function main() {
         "finished work has to remain findable, or the end state is a delete");
 
   const doneRow = await db.story.findUnique({ where: { id: shipped.id } });
-  check("nothing moves past Done",
-        doneRow?.status === "Done" && nextStatus("Done") === null);
-  check("and Delivery still moves to Done", nextStatus("Delivery") === "Done");
+  check("Done is terminal", doneRow?.status === "Done" && isTerminal("Done"));
+  check("and so is Failed, the other way a ticket leaves the rail", isTerminal("Failed"));
   await db.story.delete({ where: { id: shipped.id } });
 
   // ------------------------------------------------------------------
@@ -508,15 +492,6 @@ async function main() {
   const regret = await makeStory(ayla.id, "Changed my mind", "Requested");
   let storyPage = rendered(await (await client.go(`${APP}/story/${regret.id}`)).text());
   check("the requester is offered the control", storyPage.includes("Withdraw this request"));
-
-  // The "Open in PrusaSlicer" bridge is a bare ppp:// link the story page
-  // carries; a local helper handles it (docs/prusaslicer.md). Assert the link
-  // is present and carries this ticket's id, so the wiring cannot silently
-  // rot — the click's other half lives outside the app and cannot be tested
-  // here, but a missing or misnumbered link is the failure that would matter.
-  check("the story page offers Open in PrusaSlicer",
-        storyPage.includes(`ppp://slice/${regret.id}`),
-        "the ppp:// bridge link is missing or has the wrong id");
 
   const adminView = rendered(await (await ruben.go(`${APP}/story/${regret.id}`)).text());
   check("the printer owner is not — it is not their request",
@@ -536,27 +511,20 @@ async function main() {
         (await db.auditEvent.count({
           where: { action: "story.withdrawn", subject: storyRefOf(regret.id) } })) === 1);
 
-  // FRR-101: the window now reaches Accepted — a requester can still pull out
-  // after the owner has said yes, as long as it has not reached the bed.
-  const acceptedRegret = await makeStory(ayla.id, "Accepted then regretted", "Accepted");
-  const accPage = rendered(await (await client.go(`${APP}/story/${acceptedRegret.id}`)).text());
-  check("an Accepted ticket now offers withdrawal",
-        accPage.includes("Withdraw this request"));
-  const accIdx = formIndexContaining(accPage, "Yes, withdraw it");
-  await client.submit(`${APP}/story/${acceptedRegret.id}`, accPage, accIdx, {
-    storyId: String(acceptedRegret.id), from: `/story/${acceptedRegret.id}`,
-  });
-  check("an Accepted ticket can be withdrawn",
-        (await db.story.count({ where: { id: acceptedRegret.id } })) === 0);
-  check("and it is audited as withdrawn",
-        (await db.auditEvent.count({
-          where: { action: "story.withdrawn", subject: storyRefOf(acceptedRegret.id) } })) === 1);
-  check("the owner is told the accepted one is gone",
-        (await db.notification.count({
-          where: { recipientId: admin.id, text: { contains: "Accepted then regretted" } } })) === 1);
+  // FRR-101's original window reached one step further (Accepted) than this
+  // one does: withdrawal is Requested/Declined only now, not because the
+  // reasoning changed but because Bambuddy has real state — a library file,
+  // maybe a queue item — the moment a request leaves Requested, and tearing
+  // that down on withdrawal isn't something this app does yet (see
+  // withdrawStory's own comment in src/lib/stories.ts).
+  const slicingRegret = await makeStory(ayla.id, "Already handed to Bambuddy", "Slicing");
+  const slicingPage = rendered(await (await client.go(`${APP}/story/${slicingRegret.id}`)).text());
+  check("a Slicing ticket offers no withdrawal",
+        !slicingPage.includes("Withdraw this request"));
+  await db.story.delete({ where: { id: slicingRegret.id } });
 
-  // Past Accepted the owner has committed the bed and the material; it is no
-  // longer the requester's call.
+  // Once it's actually Printing the owner has committed the bed and the
+  // material too — the same reasoning applies even harder.
   const underway = await makeStory(ayla.id, "Already on the bed", "Printing");
   storyPage = rendered(await (await client.go(`${APP}/story/${underway.id}`)).text());
   check("a ticket already being printed offers no withdrawal",
@@ -643,15 +611,15 @@ async function main() {
   // ------------------------------------------------------------------
   section("History Prints — old work, scoped, filterable, re-queueable");
   const hDone = await makeStory(ayla.id, "Bracket, delivered and done", "Done");
-  const hDelivery = await makeStory(ayla.id, "Clip, awaiting collection", "Delivery");
+  const hFailed = await makeStory(ayla.id, "Clip that didn't work out", "Failed");
   const hDeclined = await makeStory(ayla.id, "Too thin, declined", "Declined");
   const hActive = await makeStory(ayla.id, "Still on the rail", "Printing");
   const hMallory = await makeStory(mallory.id, "Mallory's finished thing", "Done");
 
   const hist = rendered(await (await client.go(`${APP}/history`)).text());
-  check("history lists the requester's delivered / done / declined",
+  check("history lists the requester's done / failed / declined",
         hist.includes(storyRefOf(hDone.id)) &&
-        hist.includes(storyRefOf(hDelivery.id)) &&
+        hist.includes(storyRefOf(hFailed.id)) &&
         hist.includes(storyRefOf(hDeclined.id)));
   check("history hides work still on the rail",
         !hist.includes(storyRefOf(hActive.id)), "an active ticket leaked into history");

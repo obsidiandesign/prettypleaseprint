@@ -47,23 +47,6 @@ const section = (t: string) => console.info(`\n── ${t} ${"─".repeat(Math.m
  */
 const isAuthenticated = (html: string) => html.includes('data-authenticated="true"');
 
-/** A real 12-triangle binary STL, so upload probes exercise the happy path. */
-function stlBox(x: number, y: number, z: number): Uint8Array {
-  const p = [[0,0,0],[x,0,0],[x,y,0],[0,y,0],[0,0,z],[x,0,z],[x,y,z],[0,y,z]];
-  const faces = [[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,4,5],[0,5,1],
-                 [1,5,6],[1,6,2],[2,6,7],[2,7,3],[3,7,4],[3,4,0]];
-  const tris = faces.map((f) => f.flatMap((i) => p[i]!));
-  const buf = new Uint8Array(84 + tris.length * 50);
-  const view = new DataView(buf.buffer);
-  view.setUint32(80, tris.length, true);
-  let off = 84;
-  for (const t of tris) {
-    for (let i = 0; i < 9; i++) view.setFloat32(off + 12 + i * 4, t[i]!, true);
-    off += 50;
-  }
-  return buf;
-}
-
 class Browser {
   jar = new Map<string, string>();
   private store(res: Response) {
@@ -242,8 +225,8 @@ async function main() {
   const aylaStory = await db.story.create({
     data: {
       title: "Ayla's private hook", uploaderId: ayla.id, colorName: "Slate",
-      colorHex: "#4a5d78", tip: "A beer", filename: "a.stl", fileSize: 1,
-      mimeType: "model/stl", storageKey: "k1",
+      colorHex: "#4a5d78", tip: "A beer",
+      modelUrl: "https://makerworld.com/en/models/000000-probe-fixture",
     },
   });
   // Imported from scope.ts, not authz.ts: the pure rule, no "server-only".
@@ -256,43 +239,47 @@ async function main() {
 
   // API routes answer with status codes rather than redirecting to HTML —
   // middleware deliberately lets them through, so each handler owes its own
-  // check. This confirms the upload handler makes it.
-  const anonUpload = await anon.raw(`${APP}/api/upload`, {
+  // check. This confirms the story-creation handler makes it.
+  const anonCreate = await anon.raw(`${APP}/api/stories`, {
     method: "POST",
-    body: (() => {
-      const f = new FormData();
-      f.set("file", new File([new Uint8Array([1, 2, 3])], "x.stl"));
-      return f;
-    })(),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "x", modelUrl: "https://example.com/x", spoolId: 1, quantity: 1 }),
   });
   probe("A01-anon-api", "an unauthenticated API call is 401, not a redirect",
-        anonUpload.status === 401,
-        `expected 401, got ${anonUpload.status} -> ${anonUpload.headers.get("location") ?? ""}`);
+        anonCreate.status === 401,
+        `expected 401, got ${anonCreate.status} -> ${anonCreate.headers.get("location") ?? ""}`);
 
-  // The uploader is taken from the session. A body claiming otherwise must
-  // not be able to file a request in someone else's name.
-  const spoof = new FormData();
-  spoof.set("file", new File([stlBox(15, 15, 15) as BlobPart], "spoof.stl"));
-  spoof.set("title", "Filed as someone else");
-  spoof.set("material", "PLA");
-  spoof.set("colorName", "Teal");
-  spoof.set("quantity", "1");
-  spoof.set("tip", "A beer");
-  spoof.set("note", "");
-  spoof.set("uploaderId", admin.id);
-  spoof.set("status", "Done");
-  await client.raw(`${APP}/api/upload`, { method: "POST", body: spoof });
-  const spoofed = await db.story.findFirst({
-    where: { title: "Filed as someone else" },
-  });
-  probe("A01-upload-owner", "the uploader comes from the session, not the body",
-        spoofed?.uploaderId === ayla.id,
-        `story is owned by ${spoofed?.uploaderId}, session was ${ayla.id}`);
-  probe("A01-upload-status", "a posted status is ignored; new stories are Requested",
-        spoofed?.status === "Requested", String(spoofed?.status));
-  probe("A02-storage-key", "the storage key is generated, not taken from the filename",
-        !!spoofed && !spoofed.storageKey.includes("spoof"),
-        spoofed?.storageKey ?? "");
+  // The uploader is taken from the session, not the body — and unlike the
+  // old upload endpoint, this is now also enforced one layer up: CreateStorySchema
+  // has no uploaderId/status field at all, so either one in the JSON body is
+  // dropped before createStoryFromLink ever sees it. Proving that end-to-end
+  // needs a request that actually succeeds, which needs a live Bambuddy to
+  // resolve a real spoolId against — set BAMBUDDY_URL, BAMBUDDY_API_KEY and
+  // BAMBUDDY_TEST_SPOOL_ID (an id from that instance's own GET
+  // /api/v1/inventory/spools) to run this probe for real. Skipped otherwise,
+  // rather than reporting a false pass or failing the suite over an
+  // environment this script has no way to provision.
+  const testSpoolId = process.env.BAMBUDDY_TEST_SPOOL_ID;
+  if (process.env.BAMBUDDY_URL && process.env.BAMBUDDY_API_KEY && testSpoolId) {
+    await client.json("/api/stories", {
+      title: "Filed as someone else",
+      modelUrl: "https://makerworld.com/en/models/000000-probe-fixture",
+      spoolId: Number(testSpoolId),
+      quantity: 1,
+      uploaderId: admin.id,
+      status: "Done",
+    });
+    const spoofed = await db.story.findFirst({
+      where: { title: "Filed as someone else" },
+    });
+    probe("A01-create-owner", "the uploader comes from the session, not the body",
+          spoofed?.uploaderId === ayla.id,
+          `story is owned by ${spoofed?.uploaderId}, session was ${ayla.id}`);
+    probe("A01-create-status", "a posted status is ignored; a new story never starts Done",
+          spoofed?.status !== "Done", String(spoofed?.status));
+  } else {
+    console.info("  skip  A01-create-owner/status  BAMBUDDY_URL/BAMBUDDY_API_KEY/BAMBUDDY_TEST_SPOOL_ID not set");
+  }
 
   // -------------------------------------------------------------------
   // The JSON API.
@@ -311,15 +298,15 @@ async function main() {
   const mallorysStory = await db.story.create({
     data: {
       title: "Mallory's own", uploaderId: mallory.id, colorName: "Slate",
-      colorHex: "#4a5d78", tip: "A beer", filename: "m.stl", fileSize: 1,
-      mimeType: "model/stl", storageKey: "secret-key-m1",
+      colorHex: "#4a5d78", tip: "A beer",
+      modelUrl: "https://makerworld.com/en/models/000000-mallory-fixture",
     },
   });
 
   for (const [method, path] of [
     ["GET", "/api/stories"],
     ["GET", `/api/stories/${aylaStory.id}`],
-    ["POST", `/api/stories/${aylaStory.id}/advance`],
+    ["POST", `/api/stories/${aylaStory.id}/decline`],
     ["GET", `/api/stories/${aylaStory.id}/comments`],
     ["GET", "/api/notifications"],
     ["GET", "/api/openapi.json"],
@@ -334,7 +321,6 @@ async function main() {
   // Vertical: rendering no button is not authorisation, and neither is
   // documenting an endpoint without one.
   for (const [name, method, path, body] of [
-    ["advance", "POST", `/api/stories/${aylaStory.id}/advance`, null],
     ["decline", "POST", `/api/stories/${aylaStory.id}/decline`, null],
     ["flag", "POST", `/api/stories/${aylaStory.id}/flag`, { reason: "let me in" }],
     ["clear-flag", "DELETE", `/api/stories/${aylaStory.id}/flag`, null],
@@ -358,66 +344,17 @@ async function main() {
   for (const [name, path] of [
     ["read", `/api/stories/${mallorysStory.id}`],
     ["thread", `/api/stories/${mallorysStory.id}/comments`],
-    ["model", `/api/models/${mallorysStory.id}`],
   ] as const) {
     const r = await client.raw(APP + path);
     probe(`A01-api-idor-${name}`, `another client's ${name} is 404, never 403`,
           r.status === 404, `expected 404, got ${r.status}`);
   }
 
-  // ---------------------------------------------------------------------
-  // The "Open in PrusaSlicer" link credential.
-  //
-  // A second way to be somebody at /api/models/[id], for a desktop helper that
-  // holds no cookie. It replaced a bearer token pasted into a file on the
-  // owner's machine — which was the session token, so it was a thirty-day,
-  // full-authority secret at rest, and it broke outright when sessions came
-  // down to twenty minutes.
-  //
-  // The token answers *who* and nothing else, so what matters is that it is
-  // unforgeable and that it cannot be pointed somewhere it was not minted for.
-  // ---------------------------------------------------------------------
-  // Minted off a story with real bytes behind it. `mallorysStory` is a bare row
-  // with an invented storage key, so a fetch of it 502s at the object store
-  // long after the credential has done its job — which would test nothing.
-  const realStory = spoofed!;
-  const ticket = await (await apiAdmin.raw(APP + `/story/${realStory.id}`)).text();
-  const minted = /ppp:\/\/slice\/\d+\?t=([A-Za-z0-9._-]+)/.exec(ticket)?.[1] ?? "";
-  probe("A05-slicer-minted", "a ticket carries a slicer link with its own credential",
-        minted.length > 0,
-        "no ppp:// link with a ?t= credential on the rendered ticket — the " +
-        "helper would fall back to a long-lived token on disk");
-
-  // Anonymous: no cookie, no bearer, exactly the helper's position.
-  const bare = (url: string) => fetch(url, { redirect: "manual" });
-
-  probe("A01-slicer-anon", "the model route still refuses a caller with nothing",
-        (await bare(APP + `/api/models/${realStory.id}`)).status === 401,
-        "an unauthenticated fetch of model bytes was not 401");
-
-  if (minted) {
-    probe("A01-slicer-ok", "a minted link fetches the model it names",
-          (await bare(APP + `/api/models/${realStory.id}?t=${minted}`)).status === 200,
-          "the credential the app just minted did not work — the button is broken");
-
-    // The binding that matters: one link, one model. Without it, a link to your
-    // own ticket would be a key to every ticket its holder can see — and the
-    // holder here is the printer owner, who can see all of them. Mallory's is
-    // the right target precisely because the admin *may* read it by session.
-    const crossed = await bare(APP + `/api/models/${mallorysStory.id}?t=${minted}`);
-    probe("A01-slicer-bound", "and cannot be pointed at a different model",
-          crossed.status !== 200,
-          `a token minted for ${realStory.id} fetched ${mallorysStory.id} (status ${crossed.status})`);
-
-    const tampered = minted.slice(0, -4) + "AAAA";
-    probe("A02-slicer-signature", "a tampered link credential is refused",
-          (await bare(APP + `/api/models/${realStory.id}?t=${tampered}`)).status !== 200,
-          "the HMAC over the claim is not being checked — anyone could mint one");
-
-    probe("A02-slicer-garbage", "and so is something that is not a token at all",
-          (await bare(APP + `/api/models/${realStory.id}?t=not-a-token`)).status !== 200,
-          "a malformed credential was accepted");
-  }
+  // There used to be an "Open in PrusaSlicer" link credential probed here —
+  // a second way to be somebody at /api/models/[id], for a desktop helper
+  // with no cookie. Removed along with the route itself: there's no
+  // uploaded file to fetch bytes for any more, so there's nothing for a
+  // credential to gate.
 
   const said = await client.raw(APP + `/api/stories/${mallorysStory.id}/comments`, {
     method: "POST",
@@ -459,11 +396,13 @@ async function main() {
         !feed.includes("for the printer owner only"), feed.slice(0, 120));
 
   // The wire format is a place data leaks by omission — one spread of a
-  // database row and the object key is public. src/lib/api.ts names every
-  // field it emits for exactly this reason.
+  // database row and an internal id is public. src/lib/api.ts names every
+  // field it emits for exactly this reason; the Bambuddy handoff ids
+  // (library file, pipeline run, queue item, archive) are sync plumbing,
+  // not this API's business — see storyResource's own comment.
   const own = await (await client.raw(`${APP}/api/stories/${aylaStory.id}`)).text();
-  probe("A02-api-key", "the object's storage key is not on the wire",
-        !own.includes("storageKey") && !own.includes("k1"), own.slice(0, 200));
+  probe("A02-api-key", "Bambuddy's internal handoff ids are not on the wire",
+        !own.includes("libraryFileId") && !own.includes("queueItemId"), own.slice(0, 200));
   probe("A02-api-email", "and neither is anybody's e-mail address",
         !own.includes("@office.example") && !own.includes(admin.email), own.slice(0, 200));
 
@@ -474,7 +413,7 @@ async function main() {
   // Origin on last, so a probe written through it would send the honest header
   // and pass without testing anything. The jar is borrowed, the headers are
   // built here.
-  const foreign = await fetch(APP + `/api/stories/${aylaStory.id}/advance`, {
+  const foreign = await fetch(APP + `/api/stories/${aylaStory.id}/decline`, {
     method: "POST",
     redirect: "manual",
     headers: {

@@ -115,9 +115,8 @@ async function makeStory(uploaderId: string, title: string, status = "Requested"
     data: {
       title, status: status as never, uploaderId,
       material: "PETG", colorName: "Slate", colorHex: "#4a5d78", tip: "A beer",
-      quantity: 1, note: "", filename: "part.stl", fileSize: 1234,
-      mimeType: "model/stl", storageKey: `secret-object-key-${title}`,
-      dims: "10 × 10 × 10 mm",
+      quantity: 1, note: "",
+      modelUrl: `https://makerworld.com/en/models/000000-${encodeURIComponent(title)}`,
     },
   });
 }
@@ -165,7 +164,7 @@ async function main() {
   for (const [method, path] of [
     ["GET", "/api/stories"],
     ["GET", "/api/stories/1"],
-    ["POST", "/api/stories/1/advance"],
+    ["POST", "/api/stories/1/decline"],
     ["GET", "/api/notifications"],
     ["GET", "/api/openapi.json"],
   ] as const) {
@@ -212,13 +211,15 @@ async function main() {
   const paths = Object.keys(doc.paths ?? {});
   for (const expected of [
     "/api/health", "/api/stories", "/api/stories/{id}",
-    "/api/stories/{id}/advance", "/api/stories/{id}/decline",
+    "/api/stories/{id}/decline",
     "/api/stories/{id}/flag", "/api/stories/{id}/comments",
     "/api/notifications", "/api/notifications/read",
-    "/api/upload", "/api/models/{id}",
   ]) {
     check(`it documents ${expected}`, paths.includes(expected));
   }
+  check("and filing a request is POST /api/stories, not a separate upload route",
+        Boolean(doc.paths?.["/api/stories"]?.post),
+        Object.keys(doc.paths?.["/api/stories"] ?? {}).join(","));
 
   const authPaths = paths.filter((p) => p.startsWith("/api/auth/"));
   check("Better Auth's own surface is folded in, not re-typed",
@@ -259,11 +260,11 @@ async function main() {
   check(`every documented path this app owns is served by a route (${ownPaths.length} of them)`,
         missing.length === 0, missing.join(", "));
 
-  // The Zod schemas the handlers validate with, lifted into the document.
-  const wish = doc.components?.schemas?.Wish as { properties?: Record<string, unknown> };
-  check("the upload's body is derived from WishSchema, not typed out twice",
-        Boolean(wish?.properties?.material && wish?.properties?.quantity),
-        Object.keys(wish?.properties ?? {}).join(","));
+  // The Zod schema the create handler validates with, lifted into the document.
+  const createStory = doc.components?.schemas?.CreateStory as { properties?: Record<string, unknown> };
+  check("filing a request is derived from CreateStorySchema, not typed out twice",
+        Boolean(createStory?.properties?.modelUrl && createStory?.properties?.spoolId),
+        Object.keys(createStory?.properties ?? {}).join(","));
 
   // ------------------------------------------------------------------
   section("scope: a client sees their own, the printer owner sees all");
@@ -286,8 +287,6 @@ async function main() {
   const peek = await client.json<{ error?: string }>(`${APP}/api/stories/${theirs.id}`);
   check("reading another client's ticket is 404, not 403",
         peek.status === 404, `status ${peek.status}`);
-  check("and the model behind it is 404 too",
-        (await client.raw(`${APP}/api/models/${theirs.id}`)).status === 404);
 
   // `mine=true` narrows; there is no parameter that widens.
   const narrowed = await ruben.json<{ stories: { id: number }[] }>(`${APP}/api/stories?mine=true`);
@@ -298,54 +297,49 @@ async function main() {
   const oneStory = await client.json<Record<string, unknown>>(`${APP}/api/stories/${mine.id}`);
   check("a ticket carries its display ref", oneStory.body.ref === storyRef(mine.id),
         String(oneStory.body.ref));
-  check("the storage key is not on the wire",
-        !JSON.stringify(oneStory.body).includes("secret-object-key"),
+  check("Bambuddy's internal handoff ids are not on the wire",
+        !JSON.stringify(oneStory.body).includes("libraryFileId") &&
+        !JSON.stringify(oneStory.body).includes("queueItemId"),
         JSON.stringify(oneStory.body).slice(0, 200));
   check("and neither is the uploader's address",
         !JSON.stringify(oneStory.body).includes("@office.example"));
 
   // ------------------------------------------------------------------
-  section("the flow, over JSON, with the same rules as the forms");
+  section("filing a request, over JSON — there is no more advancing one");
+  //
+  // Every status but Declined is derived from Bambuddy's own state now (see
+  // src/lib/bambuddy-sync.ts), not moved by an admin calling an endpoint —
+  // there is no more POST .../advance. What's worth asserting over JSON
+  // instead: filing needs a session, and there's still no endpoint that
+  // takes a target status to jump to.
+  const anonCreate = await fetch(`${APP}/api/stories`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: APP },
+    body: JSON.stringify({ title: "x", modelUrl: "https://example.com/x", spoolId: 1, quantity: 1 }),
+  });
+  check("filing a request needs a session", anonCreate.status === 401, `status ${anonCreate.status}`);
 
-  const refused = await client.json<{ error?: string }>(
-    `${APP}/api/stories/${mine.id}/advance`, { method: "POST" });
-  check("a client cannot move their own ticket along",
-        refused.status === 403, `status ${refused.status}`);
-  check("and it did not move",
-        (await db.story.findUnique({ where: { id: mine.id } }))?.status === "Requested");
-
-  const advanced = await ruben.json<{ moved?: { from: string; to: string }; notified?: string }>(
-    `${APP}/api/stories/${mine.id}/advance`, { method: "POST" });
-  check("the printer owner moves Requested → Accepted",
-        advanced.status === 200 && advanced.body.moved?.to === "Accepted",
-        JSON.stringify(advanced.body).slice(0, 160));
-  check("the uploader is told",
-        (await db.notification.count({ where: { recipientId: ayla.id, storyId: mine.id } })) > 0);
-  check("and it is audited",
-        (await db.auditEvent.count({
-          where: { action: "story.status_changed", subject: storyRef(mine.id) },
-        })) === 1);
-
-  const declineLate = await ruben.json<{ error?: string }>(
-    `${APP}/api/stories/${mine.id}/decline`, { method: "POST" });
-  check("an Accepted ticket cannot be declined",
-        declineLate.status === 403, `status ${declineLate.status} ${declineLate.body.error}`);
-
-  for (const expected of ["Printing", "Delivery", "Done"]) {
-    const r = await ruben.json<{ moved?: { to: string } }>(
-      `${APP}/api/stories/${mine.id}/advance`, { method: "POST" });
-    check(`advanced to ${expected}`, r.body.moved?.to === expected, JSON.stringify(r.body).slice(0, 120));
+  // Actually filing one that succeeds needs a live Bambuddy to resolve a
+  // real spoolId against — see the same note in scripts/security-probe.ts.
+  const testSpoolId = process.env.BAMBUDDY_TEST_SPOOL_ID;
+  if (process.env.BAMBUDDY_URL && process.env.BAMBUDDY_API_KEY && testSpoolId) {
+    const filed = await client.json<{ story?: { id: number; status: string } }>(
+      `${APP}/api/stories`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Filed over the API",
+          modelUrl: "https://makerworld.com/en/models/000000-api-fixture",
+          spoolId: Number(testSpoolId), quantity: 1,
+        }),
+      });
+    check("a client can file their own request",
+          filed.status === 201, JSON.stringify(filed.body).slice(0, 160));
+    check("it never starts Done — a client can't pick a status",
+          filed.body.story?.status !== "Done", String(filed.body.story?.status));
+  } else {
+    console.info("  skip  filing-a-request  BAMBUDDY_URL/BAMBUDDY_API_KEY/BAMBUDDY_TEST_SPOOL_ID not set");
   }
 
-  const past = await ruben.json<{ error?: string }>(
-    `${APP}/api/stories/${mine.id}/advance`, { method: "POST" });
-  check("Done is the end of the line, and says so rather than wrapping round",
-        past.status === 409, `status ${past.status} ${past.body.error}`);
-  check("the ticket is still Done",
-        (await db.story.findUnique({ where: { id: mine.id } }))?.status === "Done");
-
-  // There is no endpoint that takes a target status — the only way to move a
-  // ticket is one derived step, so nothing can skip one.
   check("no endpoint accepts a status to jump to",
         !paths.some((p) => /status/i.test(p)), paths.filter((p) => /status/i.test(p)).join(","));
 
@@ -358,7 +352,13 @@ async function main() {
   check("Requested → Declined", declined.body.moved?.to === "Declined",
         JSON.stringify(declined.body).slice(0, 120));
 
-  const toFlag = await makeStory(ayla.id, "Thin walls", "Accepted");
+  const pastRequested = await makeStory(ayla.id, "Already handed to Bambuddy", "Slicing");
+  const declineLate = await ruben.json<{ error?: string }>(
+    `${APP}/api/stories/${pastRequested.id}/decline`, { method: "POST" });
+  check("a Slicing ticket cannot be declined",
+        declineLate.status === 403, `status ${declineLate.status} ${declineLate.body.error}`);
+
+  const toFlag = await makeStory(ayla.id, "Thin walls", "Slicing");
   const noReason = await ruben.json<{ error?: string }>(
     `${APP}/api/stories/${toFlag.id}/flag`, { method: "POST", body: JSON.stringify({}) });
   check("a flag with no reason is refused", noReason.status === 400, noReason.body.error);
@@ -372,7 +372,7 @@ async function main() {
     { method: "POST", body: JSON.stringify({ reason: "The walls are 0.3 mm." }) });
   check("a flag with a reason sticks", flagged.body.story?.flagged === true);
   check("and does NOT change the status",
-        flagged.body.story?.status === "Accepted", String(flagged.body.story?.status));
+        flagged.body.story?.status === "Slicing", String(flagged.body.story?.status));
   check("the reason reaches the uploader",
         (await db.notification.findFirst({
           where: { recipientId: ayla.id, storyId: toFlag.id },
@@ -411,15 +411,16 @@ async function main() {
           where: { action: "story.withdrawn", subject: storyRef(regret.id) },
         })) === 1);
 
-  // FRR-101: the DELETE route inherits the wider window — an Accepted ticket
-  // (agreed, not yet on the bed) can now be withdrawn through the API too.
-  const acceptedApi = await makeStory(ayla.id, "Accepted, then gone", "Accepted");
-  const wAcc = await client.json<{ withdrawn?: boolean }>(
-    `${APP}/api/stories/${acceptedApi.id}`, { method: "DELETE" });
-  check("an Accepted ticket can be withdrawn via the API",
-        wAcc.body.withdrawn === true &&
-        (await db.story.count({ where: { id: acceptedApi.id } })) === 0,
-        JSON.stringify(wAcc.body));
+  // The DELETE route shares withdrawStory's own window with the form: once
+  // Bambuddy has state for a request — anything past Requested — tearing
+  // that down on withdrawal isn't something this app does yet.
+  const slicingApi = await makeStory(ayla.id, "Already handed to Bambuddy", "Slicing");
+  const wSlicing = await client.json<{ error?: string }>(
+    `${APP}/api/stories/${slicingApi.id}`, { method: "DELETE" });
+  check("a Slicing ticket cannot be withdrawn via the API",
+        wSlicing.status === 409 &&
+        (await db.story.count({ where: { id: slicingApi.id } })) === 1,
+        JSON.stringify(wSlicing.body));
 
   const started = await makeStory(ayla.id, "Already printing", "Printing");
   const tooLate = await client.json<{ error?: string }>(
@@ -516,7 +517,7 @@ async function main() {
   // ------------------------------------------------------------------
   section("cross-origin writes are refused");
 
-  const evil = await ruben.raw(`${APP}/api/stories/${started.id}/advance`, {
+  const evil = await ruben.raw(`${APP}/api/stories/${started.id}/decline`, {
     method: "POST",
     headers: { origin: "https://not-this-app.example" },
   });

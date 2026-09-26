@@ -2,10 +2,9 @@ import "server-only";
 import { z } from "zod";
 
 import { auth } from "@/lib/auth";
-import { COLORS, MATERIALS, TIPS, WishSchema } from "@/lib/catalog";
-import { ACCEPTED_EXTENSIONS, MAX_BYTES, formatBytes } from "@/lib/models";
-import { FLOW } from "@/lib/scope";
-import { BodySchema, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, ReasonSchema } from "@/lib/stories";
+import { TIPS } from "@/lib/catalog";
+import { ALL_STATUSES } from "@/lib/scope";
+import { BodySchema, CreateStorySchema, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, ReasonSchema } from "@/lib/stories";
 import { NOTIFICATION_LIMIT_MAX } from "@/lib/notifications";
 
 /**
@@ -77,10 +76,12 @@ const COMMON_ERRORS = {
 const STORY_SCHEMA = {
   type: "object",
   description:
-    "A print request. `storageKey` — the object's name in the bucket — is " +
-    "deliberately absent: the bytes are reachable only through `file.url`, " +
-    "which re-checks who is asking.",
-  required: ["id", "ref", "title", "status", "file", "uploader"],
+    "A print request, filed from a pasted model link rather than an upload. " +
+    "The Bambuddy handoff ids — library file, pipeline run, queue item, " +
+    "archive — are deliberately absent: they're sync plumbing (see " +
+    "src/lib/bambuddy-sync.ts), not this API's business. `status` and " +
+    "`errorMessage` are what a caller needs instead.",
+  required: ["id", "ref", "title", "status", "model", "color", "uploader"],
   properties: {
     id: { type: "integer", examples: [4] },
     ref: {
@@ -89,41 +90,48 @@ const STORY_SCHEMA = {
       examples: ["PPP-104"],
     },
     title: { type: "string", examples: ["Cable clip"] },
-    status: { type: "string", enum: [...FLOW, "Declined"] },
+    status: {
+      type: "string",
+      enum: [...ALL_STATUSES],
+      description:
+        "Requested -> Slicing -> Ready -> Printing -> Done is the happy path, " +
+        "derived from Bambuddy's own state, not moved by hand. Failed and " +
+        "Declined are branches off it, not steps on it.",
+    },
     flagged: { type: "boolean" },
     flagReason: { type: ["string", "null"] },
     quantity: { type: "integer", minimum: 1 },
-    material: { type: "string", enum: [...MATERIALS] },
+    neededBy: { type: ["string", "null"], format: "date-time" },
+    model: {
+      type: "object",
+      description: "The pasted link, and what Bambuddy resolved it to.",
+      properties: {
+        url: { type: "string", examples: ["https://makerworld.com/en/models/123456"] },
+        resolvedTitle: { type: ["string", "null"], examples: ["Cable clip, 4 mm"] },
+        plateCount: { type: ["integer", "null"] },
+      },
+    },
+    material: {
+      type: ["string", "null"],
+      description: "Whatever Bambuddy's spool reported at intake — not a fixed list.",
+      examples: ["PLA Basic"],
+    },
     color: {
       type: "object",
+      description: "Snapshotted from a live spool at intake — see `spoolId` on the create request.",
       properties: {
-        name: { type: "string", enum: COLORS.map((c) => c.name) },
-        hex: { type: "string", examples: ["#4a5d78"] },
+        name: { type: "string", examples: ["Glow in Dark (Green)"] },
+        hex: { type: ["string", "null"], examples: ["EBF1E0FF"] },
       },
     },
     tip: { type: "string", enum: [...TIPS] },
     note: { type: "string" },
-    file: {
-      type: "object",
-      properties: {
-        filename: { type: "string", examples: ["clip.stl"] },
-        size: { type: "integer", description: "Bytes." },
-        mimeType: { type: "string", examples: ["model/stl"] },
-        dims: {
-          type: ["string", "null"],
-          description:
-            "Bounding box measured from the mesh at upload time, honouring a " +
-            "3MF `unit` attribute. Null for a file measured before this existed.",
-          examples: ["41 × 22 × 9 mm"],
-        },
-        url: {
-          type: "string",
-          description:
-            "Where the bytes are. Proxied through the app, not a signed " +
-            "storage URL — object storage publishes no port in this deployment.",
-          examples: ["/api/models/4"],
-        },
-      },
+    errorMessage: {
+      type: ["string", "null"],
+      description:
+        "Bambuddy's own explanation, surfaced as-is: why a Requested ticket " +
+        "hasn't started slicing, or why a Ready one hasn't auto-started " +
+        "(a waiting_reason, not necessarily a failure).",
     },
     uploader: {
       type: "object",
@@ -293,7 +301,6 @@ export async function buildOpenApiDocument() {
       { name: "queue", description: "The printer owner's actions on a ticket." },
       { name: "conversation", description: "The thread that lives on a ticket." },
       { name: "activity", description: "Your notifications." },
-      { name: "files", description: "Uploading a model, and fetching its bytes." },
       { name: "service", description: "Liveness, and this document." },
       ...authHalf.tags,
     ],
@@ -321,7 +328,7 @@ export async function buildOpenApiDocument() {
         Comment: COMMENT_SCHEMA,
         Notification: NOTIFICATION_SCHEMA,
         // Derived from the Zod schemas the handlers actually validate with.
-        Wish: jsonSchema(WishSchema),
+        CreateStory: jsonSchema(CreateStorySchema),
         FlagReason: jsonSchema(z.object({ reason: ReasonSchema })),
         CommentBody: jsonSchema(z.object({ body: BodySchema })),
         ...authHalf.schemas,
@@ -399,7 +406,7 @@ export async function buildOpenApiDocument() {
               in: "query",
               description:
                 "Repeat the parameter, or separate with commas. Omit for every status.",
-              schema: { type: "array", items: { type: "string", enum: [...FLOW, "Declined"] } },
+              schema: { type: "array", items: { type: "string", enum: [...ALL_STATUSES] } },
               explode: true,
             },
             { name: "flagged", in: "query", schema: { type: "boolean" } },
@@ -450,6 +457,43 @@ export async function buildOpenApiDocument() {
             ...COMMON_ERRORS,
           },
         },
+
+        post: {
+          tags: ["stories"],
+          summary: "File a request from a model link",
+          description:
+            "A link, not a file — there is no multipart endpoint any more. " +
+            "`spoolId` is the only way to name a colour: it's resolved against " +
+            "live Bambuddy inventory server-side, and `material`/`color` on " +
+            "the response are snapshotted from that spool at this moment, not " +
+            "re-read from Bambuddy afterward.\n\n" +
+            "Resolving the link, importing it and starting the standard-PLA " +
+            "pipeline all happen synchronously here — the common case is the " +
+            "response already shows `status: \"Slicing\"` or even `\"Ready\"`. " +
+            "A Bambuddy hiccup doesn't fail this call: the ticket is still " +
+            "created as `Requested` with `errorMessage` set, and a background " +
+            "sync retries it (see src/lib/bambuddy-sync.ts).",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/CreateStory" },
+                example: {
+                  title: "Cable clip",
+                  modelUrl: "https://makerworld.com/en/models/123456",
+                  spoolId: 15,
+                  quantity: 1,
+                },
+              },
+            },
+          },
+          responses: {
+            "201": storyResponse("Filed."),
+            "400": errorResponse("A field was missing or did not parse."),
+            "409": errorResponse("That spoolId isn't in Bambuddy's live inventory any more."),
+            ...COMMON_ERRORS,
+          },
+        },
       },
 
       "/api/stories/{id}": {
@@ -472,12 +516,12 @@ export async function buildOpenApiDocument() {
           tags: ["stories"],
           summary: "Withdraw your own request",
           description:
-            "Only the person who asked for it, and only while nobody has " +
-            "acted on it — `Requested` or `Declined`. Past that the printer " +
-            "owner has committed time, filament and bed space, and a ticket " +
-            "vanishing from under them is not the requester's call to make.\n\n" +
-            "The stored model goes with it, along with the conversation and " +
-            "the notifications. The audit row stays.",
+            "Only the person who asked for it, and only before Bambuddy has " +
+            "any state for it — `Requested` or `Declined`. Past that Bambuddy " +
+            "holds a library file and possibly a queue item, and tearing " +
+            "those down on withdrawal isn't something this app does yet; ask " +
+            "the printer owner instead.\n\n" +
+            "The conversation and notifications go with it. The audit row stays.",
           parameters: [storyIdParam],
           responses: {
             "200": {
@@ -504,41 +548,17 @@ export async function buildOpenApiDocument() {
         },
       },
 
-      "/api/stories/{id}/advance": {
-        post: {
-          tags: ["queue"],
-          summary: "Move a ticket one step along",
-          description:
-            "Requested → Accepted → Printing → Delivery → Done, forwards, one " +
-            "step at a time.\n\n" +
-            "There is deliberately no endpoint that sets the status to a value " +
-            "you choose: the next state is derived from the current one, so a " +
-            "caller cannot skip a step. The body is ignored.",
-          parameters: [storyIdParam],
-          responses: {
-            "200": storyResponse("Moved, and the uploader was told.", {
-              moved: {
-                type: "object",
-                properties: { from: { type: "string" }, to: { type: "string" } },
-              },
-              notified: { type: "string", description: "Who was told." },
-            }),
-            "403": errorResponse("Only the printer owner moves a story along."),
-            "404": errorResponse("No such ticket."),
-            "409": errorResponse("Already at the end of the line."),
-            ...COMMON_ERRORS,
-          },
-        },
-      },
-
       "/api/stories/{id}/decline": {
         post: {
           tags: ["queue"],
           summary: "Decline a request",
           description:
-            "Terminal, and reachable only from `Requested`. Once the printer " +
-            "owner has said yes, saying no is a conversation rather than a " +
-            "state change.",
+            "Terminal, and reachable only from `Requested`. There is no " +
+            "endpoint that sets a ticket's status to a value you choose — " +
+            "every status but `Declined` is derived from Bambuddy's own state " +
+            "(see src/lib/bambuddy-sync.ts), not set directly. Once a request " +
+            "has reached Bambuddy, saying no is a conversation and a " +
+            "withdrawal, not a status change.",
           parameters: [storyIdParam],
           responses: {
             "200": storyResponse("Declined, and the uploader was told.", {
@@ -747,94 +767,6 @@ export async function buildOpenApiDocument() {
             },
             "400": errorResponse("`id` was present but not a string."),
             ...COMMON_ERRORS,
-          },
-        },
-      },
-
-      "/api/upload": {
-        post: {
-          tags: ["files"],
-          summary: "Upload a model and open a request",
-          description:
-            `Multipart, because it carries up to ${formatBytes(MAX_BYTES)} of ` +
-            `geometry. ${ACCEPTED_EXTENSIONS.join(" and ")} only, and the ` +
-            "decision is made on the **bytes**, not the filename — an STL " +
-            "renamed `.3mf` is refused, and so is anything that is neither.\n\n" +
-            "Order matters: nothing reaches storage until the file has been " +
-            "inspected, and no ticket exists until the object is in place. A " +
-            "refused upload therefore leaves nothing behind.\n\n" +
-            "The uploader comes from the session. A `uploaderId` or `status` " +
-            "in the body is ignored — every new ticket starts `Requested`.",
-          requestBody: {
-            required: true,
-            content: {
-              "multipart/form-data": {
-                schema: {
-                  allOf: [
-                    { $ref: "#/components/schemas/Wish" },
-                    {
-                      type: "object",
-                      required: ["file"],
-                      properties: {
-                        file: {
-                          type: "string",
-                          format: "binary",
-                          description: `The model. At most ${formatBytes(MAX_BYTES)}.`,
-                        },
-                      },
-                    },
-                  ],
-                },
-                encoding: { file: { contentType: "application/octet-stream" } },
-              },
-            },
-          },
-          responses: {
-            "200": {
-              description: "Stored, and the printer owner was told.",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      id: { type: "integer" },
-                      ref: { type: "string", examples: ["PPP-104"] },
-                      title: { type: "string" },
-                      dims: { type: ["string", "null"] },
-                    },
-                  },
-                },
-              },
-            },
-            "400": errorResponse("No file attached, a malformed body, or a field the catalogue does not allow."),
-            "413": errorResponse("Larger than the cap."),
-            "422": errorResponse("The bytes are not an acceptable model. The reason says which check failed."),
-            "502": errorResponse("Object storage would not take it. Nothing was saved."),
-            ...COMMON_ERRORS,
-          },
-        },
-      },
-
-      "/api/models/{id}": {
-        get: {
-          tags: ["files"],
-          summary: "Download the model",
-          description:
-            "The bytes, streamed through the app rather than handed out as a " +
-            "signed storage URL — object storage publishes no port in this " +
-            "deployment, so a signed URL would point at something a browser " +
-            "cannot reach.\n\n" +
-            "Scoped like the ticket: someone else's model is `404`. A download " +
-            "by anyone other than the uploader is written to the audit trail.",
-          parameters: [storyIdParam],
-          responses: {
-            "200": {
-              description: "The file, as an attachment.",
-              content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } },
-            },
-            "401": { description: "No session." },
-            "404": { description: "No such ticket, or not one you may see." },
-            "502": { description: "Object storage did not answer." },
           },
         },
       },
