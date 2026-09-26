@@ -128,8 +128,10 @@ const UNQUEUED_GRACE_MS = 2 * 60 * 1000;
 function unqueuedReason(run: PipelineRun): string | null {
   if (run.status !== "completed") return null;
   if (run.jobs.some((job) => job.queue_entry_id != null)) return null;
+  // A missing or unparseable completed_at counts as past the grace: waiting
+  // on a time that never comes would leave the story in Slicing for good.
   const completedAt = run.completed_at ? Date.parse(run.completed_at) : NaN;
-  if (!(Date.now() - completedAt > UNQUEUED_GRACE_MS)) return null;
+  if (Number.isFinite(completedAt) && Date.now() - completedAt <= UNQUEUED_GRACE_MS) return null;
 
   const jobError = run.jobs.find((job) => job.error_message)?.error_message;
   return (
