@@ -4,8 +4,10 @@ import { redirect } from "next/navigation";
 
 import { requireAdmin, requireUser } from "@/lib/authz";
 import {
+  CreateStorySchema,
   StoryProblem,
   clearFlag as clear,
+  createStoryFromLink as create,
   declineStory as decline,
   flagStory as flag,
   requeueStory as requeue,
@@ -65,6 +67,44 @@ async function run(
     back(formData.get("from"), { toast });
   } catch (error) {
     if (error instanceof StoryProblem) back(formData.get("from"), { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * File a new request from the intake form. A link, not a file — see
+ * `createStoryFromLink` for why the form only ever sends a `spoolId`, never
+ * a colour name or hex directly.
+ *
+ * Lands on the new ticket, `?sent=1`, so the requester watches the one they
+ * just filed rather than being dropped back on the board to go find it.
+ * Validation failures and refusals both return to `/upload` with the
+ * message in the query string, same as every other action here.
+ */
+export async function createStory(formData: FormData): Promise<void> {
+  const user = await requireUser("/upload");
+
+  const neededByRaw = formData.get("neededBy");
+  const parsed = CreateStorySchema.safeParse({
+    title: formData.get("title"),
+    modelUrl: formData.get("modelUrl"),
+    spoolId: formData.get("spoolId"),
+    quantity: formData.get("quantity"),
+    note: formData.get("note") ?? undefined,
+    neededBy: typeof neededByRaw === "string" && neededByRaw ? neededByRaw : undefined,
+  });
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    redirect(`/upload?error=${encodeURIComponent(issue?.message ?? "Check the form.")}`);
+  }
+
+  try {
+    const created = await create(user, parsed.data);
+    redirect(`/story/${created.id}?sent=1`);
+  } catch (error) {
+    if (error instanceof StoryProblem) {
+      redirect(`/upload?error=${encodeURIComponent(error.message)}`);
+    }
     throw error;
   }
 }

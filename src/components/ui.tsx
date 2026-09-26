@@ -180,10 +180,11 @@ export function Fact({ label, children }: { label: string; children: ReactNode }
  */
 const CHIP_SKIN: Record<string, string> = {
   Requested: "bg-chrome text-ink",
-  Accepted: "bg-aqua text-ink",
+  Slicing: "bg-aqua text-ink",
+  Ready: "bg-mint-wash text-ink",
   Printing: "bg-sun text-ink",
-  Delivery: "bg-cherry text-ink",
   Done: "bg-mint text-ink",
+  Failed: "bg-cherry text-ink",
   Declined: "bg-cream-3 text-ink-2",
   // Feature-request states (see FEATURE_FLOW). Reuse the print palette's roles:
   // sun = in-progress/warning, cherry = wants-you-to-act.

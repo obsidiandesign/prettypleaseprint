@@ -18,6 +18,9 @@ export type CardStory = Story & { uploader: Pick<User, "name" | "initials"> };
  * `showUploader` carries the authorisation rule into the design: a client only
  * ever sees their own tickets, so their name on every one would be noise.
  */
+/** A story's colour has no stock swatch until a spool has been picked. */
+const NO_COLOR = "#b6bcc2";
+
 export function StoryCard({
   story,
   showUploader,
@@ -28,6 +31,7 @@ export function StoryCard({
   compact?: boolean;
 }) {
   const printing = story.status === "Printing";
+  const swatch = story.colorHex ? `#${story.colorHex.replace(/^#/, "")}` : NO_COLOR;
 
   return (
     <Link
@@ -38,7 +42,7 @@ export function StoryCard({
       <span
         aria-hidden
         className="block h-[8px] rounded-t-[7px] border-b-[3px] border-ink"
-        style={{ background: story.colorHex }}
+        style={{ background: swatch }}
       />
 
       <div className={compact ? "px-[13.2px] py-[11px]" : "px-[15px] py-[13.2px]"}>
@@ -74,19 +78,22 @@ export function StoryCard({
             <span
               aria-hidden
               className="h-[9px] w-[9px] rounded-full border border-ink"
-              style={{ background: story.colorHex }}
+              style={{ background: swatch }}
             />
-            {story.material}
+            {story.material ?? story.colorName}
           </span>
-          <span className="rounded-chip border-2 border-ink bg-aqua-wash px-[9px] py-[2px] font-mono text-[11px] font-bold uppercase tracking-[0.05em] text-ink">
-            {story.tip}
-          </span>
+          {story.tip && (
+            <span className="rounded-chip border-2 border-ink bg-aqua-wash px-[9px] py-[2px] font-mono text-[11px] font-bold uppercase tracking-[0.05em] text-ink">
+              {story.tip}
+            </span>
+          )}
         </div>
 
         {/*
-         * On the griddle. Without a printer API there is no telemetry, so this
-         * says where it is and nothing about how far along — the bar is a
-         * marker, not a progress reading.
+         * The two states worth a banner: actually printing (Bambuddy's own
+         * status, not a guess), and anything with errorMessage set — a
+         * failure, or a Ready ticket Bambuddy flagged with a waiting_reason
+         * (see bambuddy-sync.ts). Both need eyes on them; only one is bad.
          */}
         {printing && (
           <div className="mt-[11px] flex items-center gap-[8px] rounded-[6px] border-2 border-ink bg-sun-wash px-[8px] py-[4px]">
@@ -96,6 +103,13 @@ export function StoryCard({
             />
             <span className="font-mono text-[11px] font-bold uppercase tracking-[0.06em] text-sun-dk">
               on the bed
+            </span>
+          </div>
+        )}
+        {story.errorMessage && (
+          <div className="mt-[11px] rounded-[6px] border-2 border-ink bg-cherry-wash px-[8px] py-[4px]">
+            <span className="font-mono text-[11px] font-bold uppercase tracking-[0.06em] text-cherry-dk">
+              needs a look
             </span>
           </div>
         )}

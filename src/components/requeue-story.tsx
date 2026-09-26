@@ -5,11 +5,11 @@ import { requeueStory } from "@/app/actions/stories";
  *
  * Shown to the person who filed the request, on any of their own tickets —
  * the first print is usually a test, so re-running a finished (or declined)
- * one should not mean hunting down the model file and re-uploading it.
+ * one should not mean re-pasting the link and re-picking everything.
  *
  * A plain form, so it works with JavaScript off like the rest of the ticket
- * controls. The server action copies the file to a fresh object, opens a new
- * `Requested` ticket and sends the requester to it; the original is left
+ * controls. The server action opens a new `Requested` ticket from the same
+ * link and wish, and sends the requester to it; the original is left
  * exactly as it was.
  */
 export function RequeueStory({
@@ -33,7 +33,7 @@ export function RequeueStory({
         <button
           type="submit"
           aria-label={`Print ${label} again`}
-          title="Opens a fresh request from the same file — no re-upload"
+          title="Opens a fresh request from the same link"
           className="stamp inline-flex cursor-pointer items-center gap-[6px] rounded-chip border-[3px] border-ink bg-aqua px-[13.2px] py-[6px] text-[13px] font-bold text-ink hover:bg-sun"
         >
           <span aria-hidden className="font-mono text-[14px] leading-none">↻</span>
@@ -56,7 +56,7 @@ export function RequeueStory({
         Print {label} again
       </button>
       <p className="m-0 mt-[6px] font-mono text-[11px] leading-[1.5] text-ink-3">
-        Opens a fresh request from the same file — no re-upload.
+        Opens a fresh request from the same link.
       </p>
     </form>
   );

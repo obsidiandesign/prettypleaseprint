@@ -1,15 +1,20 @@
-import { advanceStory, clearFlag, declineStory, flagStory } from "@/app/actions/stories";
-import { nextStatus } from "@/lib/scope";
+import { clearFlag, declineStory, flagStory } from "@/app/actions/stories";
 import type { StoryStatus } from "@prisma/client";
 
 /**
  * The printer owner's controls for one ticket.
  *
+ * There used to be an "Accept it" / "Move to X" button here — gone along with
+ * `advanceStory`. Status now comes from Bambuddy, not a click (see the note
+ * in stories.ts where that function used to be); what's left for a person is
+ * flagging a real problem with the model, or declining before anything's been
+ * sent to Bambuddy at all.
+ *
  * Every one is a plain form posting to a server action, so the whole panel
- * works with JavaScript off and there is no client bundle for it. The two
- * consequential actions — decline and flag — sit behind a `<details>`
- * disclosure rather than firing on a single click: decline is terminal, and a
- * flag without a reason is useless, so both need a second beat anyway.
+ * works with JavaScript off and there is no client bundle for it. Both
+ * actions sit behind a `<details>` disclosure rather than firing on a single
+ * click: decline is terminal, and a flag without a reason is useless, so both
+ * need a second beat anyway.
  */
 export function AdminActions({
   storyId,
@@ -27,7 +32,6 @@ export function AdminActions({
   from: string;
   compact?: boolean;
 }) {
-  const next = nextStatus(status);
   const isNew = status === "Requested";
   const declined = status === "Declined";
 
@@ -42,19 +46,6 @@ export function AdminActions({
   return (
     <div className={compact ? "flex flex-wrap items-start gap-[8px]" : "flex flex-col gap-[13.2px]"}>
       <div className="flex flex-wrap items-start gap-[8px]">
-        {next && (
-          <form action={advanceStory}>
-            <input type="hidden" name="id" value={storyId} />
-            <input type="hidden" name="from" value={from} />
-            <button
-              type="submit"
-              className="stamp cursor-pointer rounded-chip border-[3px] border-ink bg-cherry-dk px-[18px] py-[8px] text-[14px] font-bold text-cream hover:bg-cherry"
-            >
-              {isNew ? "Accept it" : `Move to ${next}`}
-            </button>
-          </form>
-        )}
-
         {/* A reason is required, so this cannot be a one-click button. */}
         <details className="group">
           <summary className="stamp inline-block cursor-pointer list-none rounded-chip border-[3px] border-ink bg-porcelain px-[15px] py-[8px] text-[14px] font-bold text-ink hover:bg-sun">

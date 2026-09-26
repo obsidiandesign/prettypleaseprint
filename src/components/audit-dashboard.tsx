@@ -1,5 +1,4 @@
 import { relativeTime } from "@/lib/catalog";
-import { formatBytes } from "@/lib/models";
 import type { Mix, Refusals, Stage } from "@/lib/dashboard";
 
 /**
@@ -105,7 +104,6 @@ export function AuditDashboard({
   const mostWaiting = Math.max(1, ...stages.map((s) => s.waiting));
   const topMaterial = Math.max(1, ...mix.materials.map((m) => m.count));
   const topColor = Math.max(1, ...mix.colors.map((c) => c.count));
-  const topSize = Math.max(1, ...mix.sizes.map((s) => s.count));
 
   return (
     <div className="mb-[26.4px] grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] items-start gap-[17.6px]">
@@ -223,7 +221,7 @@ export function AuditDashboard({
       {/* ---------------- 3. what gets asked for ---------------- */}
       <Panel kicker={`${mix.total} request${mix.total === 1 ? "" : "s"} in all`} title="What gets asked for">
         {mix.total === 0 ? (
-          <Empty>Nothing uploaded yet.</Empty>
+          <Empty>Nothing requested yet.</Empty>
         ) : (
           <>
             <p className="m-0 mb-[6px] font-mono text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-3">
@@ -243,16 +241,6 @@ export function AuditDashboard({
               {mix.colors.slice(0, 5).map((c) => (
                 <Bar key={c.label} label={c.label} value={`${c.count}`} swatch={c.hex}
                      share={c.count / topColor} fill="bg-mint" />
-              ))}
-            </div>
-
-            <p className="m-0 mb-[6px] mt-[13.2px] font-mono text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-3">
-              File size · largest {formatBytes(mix.largestBytes)}
-            </p>
-            <div className="flex flex-col gap-[7px]">
-              {mix.sizes.map((s) => (
-                <Bar key={s.label} label={s.label} value={`${s.count}`}
-                     share={s.count / topSize} fill="bg-chrome-dk" />
               ))}
             </div>
           </>

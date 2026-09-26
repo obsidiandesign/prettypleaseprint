@@ -203,47 +203,29 @@ export type Mix = {
   total: number;
   materials: Tally[];
   colors: Tally[];
-  /** Buckets, so "is anybody near the cap" is answerable at a glance. */
-  sizes: Tally[];
-  largestBytes: number;
 };
 
 /**
- * Filament and file size, straight off `Story`.
+ * Filament, straight off `Story`.
  *
- * The material and colour tallies are the ones that turn into a shopping list.
- * The size buckets are here for a narrower reason: the upload cap was raised to
- * 250 MB and the viewer stops previewing at 50 MB, and both of those were set
- * from reasoning rather than from what people actually upload. This is the
- * panel that says whether either number was right.
+ * The material and colour tallies are the ones that turn into a shopping
+ * list. There used to be a file-size distribution here too, back when a
+ * request carried an uploaded file — gone along with the upload path itself.
  */
 export async function mix(): Promise<Mix> {
-  const [materials, colors, sizes] = await Promise.all([
+  const [materials, colors, total] = await Promise.all([
     db.story.groupBy({ by: ["material"], _count: { _all: true } }),
     db.story.groupBy({ by: ["colorName", "colorHex"], _count: { _all: true } }),
-    db.story.findMany({ select: { fileSize: true } }),
+    db.story.count(),
   ]);
 
-  const MB = 1024 * 1024;
-  const buckets: Array<{ label: string; test: (n: number) => boolean }> = [
-    { label: "under 1 MB", test: (n) => n < MB },
-    { label: "1 – 10 MB", test: (n) => n >= MB && n < 10 * MB },
-    { label: "10 – 50 MB", test: (n) => n >= 10 * MB && n < 50 * MB },
-    { label: "over 50 MB", test: (n) => n >= 50 * MB },
-  ];
-
   return {
-    total: sizes.length,
+    total,
     materials: materials
-      .map((m) => ({ label: m.material, count: m._count._all }))
+      .map((m) => ({ label: m.material ?? "Unspecified", count: m._count._all }))
       .sort((a, b) => b.count - a.count),
     colors: colors
-      .map((c) => ({ label: c.colorName, hex: c.colorHex, count: c._count._all }))
+      .map((c) => ({ label: c.colorName, hex: c.colorHex ?? undefined, count: c._count._all }))
       .sort((a, b) => b.count - a.count),
-    sizes: buckets.map((b) => ({
-      label: b.label,
-      count: sizes.filter((s) => b.test(s.fileSize)).length,
-    })),
-    largestBytes: sizes.reduce((m, s) => Math.max(m, s.fileSize), 0),
   };
 }

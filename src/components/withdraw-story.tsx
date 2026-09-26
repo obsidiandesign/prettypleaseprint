@@ -9,10 +9,9 @@ import { withdrawStory } from "@/app/actions/stories";
  * the control is withdrawn (FRR-101). The server action re-checks; drawing a
  * button is not authorisation.
  *
- * Behind a disclosure, and it says plainly that the file goes too, because
- * this is the one action in the app that destroys something. Everything else
- * moves a ticket along or marks it; this removes it, the conversation with it,
- * and the uploaded geometry from storage.
+ * Behind a disclosure, because this is the one action in the app that
+ * destroys something. Everything else moves a ticket along or marks it;
+ * this removes it and the conversation with it.
  *
  * The trigger is a *button*, in the same enamel shape as Decline and Flag in
  * `admin-actions.tsx`. It used to be drawn with a transparent border and muted
@@ -49,9 +48,8 @@ export function WithdrawStory({
         <input type="hidden" name="from" value={from} />
         <div className="rounded-card border-[3px] border-ink bg-cherry-wash p-[13.2px]">
           <p className="m-0 mb-[11px] text-[13.5px] leading-[1.45] text-ink">
-            Removes {label} for good — the ticket, anything said on it,
-            and the model file itself. There is no undo, and re-uploading is
-            the only way back.
+            Removes {label} for good — the ticket and anything said on it.
+            There is no undo; pasting the link again is the only way back.
           </p>
           <button
             type="submit"

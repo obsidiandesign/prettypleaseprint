@@ -3,7 +3,6 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { printerName, requireUser, storyScope } from "@/lib/authz";
 import { storyRef } from "@/lib/scope";
-import { formatBytes } from "@/lib/models";
 import { relativeTime } from "@/lib/catalog";
 import { AppHeader } from "@/components/app-header";
 import { Kicker, StatusChip } from "@/components/ui";
@@ -12,13 +11,8 @@ import type { StoryStatus } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 
-/**
- * What counts as printed: it came off the plate, whether or not it has been
- * handed over yet. Named rather than repeated as a literal pair, because the
- * last time the flow was reordered these three call sites had to be found by
- * grep.
- */
-const PRINTED: StoryStatus[] = ["Delivery", "Done"];
+/** What counts as printed: it came off the plate. Named rather than repeated as a literal, so a status added later is one edit, not a grep. */
+const PRINTED: StoryStatus[] = ["Done"];
 
 
 /**
@@ -42,7 +36,7 @@ export default async function ProfilePage() {
   const isAdmin = user.role === "admin";
   const scope = storyScope(user);
 
-  const [stories, finished, beers, favourite, waiting, bytes] = await Promise.all([
+  const [stories, finished, beers, favourite, ready, needsAttention] = await Promise.all([
     db.story.findMany({
       where: scope,
       orderBy: { createdAt: "desc" },
@@ -60,39 +54,23 @@ export default async function ProfilePage() {
       orderBy: { _count: { material: "desc" } },
       take: 1,
     }),
-    db.story.count({ where: { AND: [scope, { status: "Requested" }] } }),
-    db.story.aggregate({
-      where: { AND: [scope, { status: { in: PRINTED } }] },
-      _sum: { fileSize: true },
-    }),
+    db.story.count({ where: { AND: [scope, { status: "Ready" }] } }),
+    db.story.count({ where: { AND: [scope, { errorMessage: { not: null } }] } }),
   ]);
 
   const inHand = stories.filter((s) => s.status === "Done").length;
-  const waitingToCollect = stories.filter((s) => s.status === "Delivery").length;
   const usual = favourite[0]?.material ?? "—";
 
-  /*
-   * The handoff's admin card here is "Printer time given", and there is no
-   * honest number behind it: print-time estimates were removed because a
-   * figure derived from a bounding box is a guess dressed as a measurement.
-   * Rather than invent one, this counts something real — how much geometry
-   * has actually come off the plate. Swap it back the day a slicer is wired
-   * in and the hours are known rather than assumed.
-   */
   const cards: Card[] = isAdmin
     ? [
         { value: String(finished), label: "Printed for the group", skin: "bg-aqua" },
-        { value: String(waiting), label: "Waiting on you", skin: "bg-sun" },
-        { value: formatBytes(bytes._sum.fileSize ?? 0), label: "Geometry off the plate", skin: "bg-cream-2" },
+        { value: String(ready), label: "Ready to print", skin: "bg-mint-wash" },
+        { value: String(needsAttention), label: "Need a look", skin: "bg-cherry-wash" },
         { value: String(beers), label: "Beers owed to you", skin: "bg-mint" },
       ]
     : [
         { value: String(stories.length), label: "Requests made", skin: "bg-aqua" },
-        {
-          value: String(waitingToCollect > 0 ? waitingToCollect : inHand),
-          label: waitingToCollect > 0 ? "Ready to collect" : "In your hands",
-          skin: waitingToCollect > 0 ? "bg-cherry-wash" : "bg-mint",
-        },
+        { value: String(inHand), label: "In your hands", skin: "bg-mint" },
         { value: String(beers), label: `Beers owed to ${owner}`, skin: "bg-sun" },
         { value: usual, label: "Your usual material", skin: "bg-cream-2" },
       ];
@@ -158,7 +136,7 @@ export default async function ProfilePage() {
                 <span
                   aria-hidden
                   className="h-[40px] w-[40px] flex-none rounded-full border-[3px] border-ink"
-                  style={{ background: story.colorHex }}
+                  style={{ background: story.colorHex ? `#${story.colorHex.replace(/^#/, "")}` : "#b6bcc2" }}
                 />
                 <div className="min-w-[180px] flex-[1_1_240px]">
                   <Link
@@ -168,20 +146,17 @@ export default async function ProfilePage() {
                     {story.title}
                   </Link>
                   <p className="m-0 mt-[3px] font-mono text-[11px] uppercase tracking-[0.04em] text-ink-3">
-                    {storyRef(story.id)} · {story.filename}
+                    {storyRef(story.id)}
                     {isAdmin ? ` · ${story.uploader.name}` : ""} ·{" "}
                     {relativeTime(story.createdAt)}
                   </p>
                 </div>
                 <StatusChip status={story.status} />
-                {story.flagged && (
+                {(story.flagged || story.errorMessage) && (
                   <span className="rounded-chip border-2 border-ink bg-cherry px-[9px] py-[2px] font-mono text-[10.5px] font-bold uppercase text-ink">
                     needs a look
                   </span>
                 )}
-                <span className="w-[120px] font-mono text-[11px] uppercase tracking-[0.04em] text-ink-3">
-                  {story.tip}
-                </span>
               </div>
             ))
           )}

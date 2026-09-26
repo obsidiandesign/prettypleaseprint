@@ -22,15 +22,14 @@ export const dynamic = "force-dynamic";
  * the colour code.
  */
 const RAIL: Record<string, { bar: string; note: string }> = {
-  Requested: { bar: "bg-chrome", note: "waiting on a yes" },
-  Accepted: { bar: "bg-aqua", note: "queued up" },
+  Requested: { bar: "bg-chrome", note: "just sent" },
+  Slicing: { bar: "bg-aqua", note: "Bambuddy is on it" },
+  Ready: { bar: "bg-mint-wash", note: "sliced, waiting to be started" },
   Printing: { bar: "bg-sun", note: "on the bed" },
-  Delivery: { bar: "bg-cherry", note: "come and get it" },
-  // Not a rail — Done is where a ticket leaves the board. Kept in the map so
-  // a chip rendered off-board still finds its colour. The colours did not move
-  // with the order because they were never about position: cherry is the
-  // state that wants somebody to act, mint is the settled one.
+  // Not rails — Done/Failed are where a ticket leaves the board. Kept in the
+  // map so a chip rendered off-board still finds its colour.
   Done: { bar: "bg-mint", note: "handed over" },
+  Failed: { bar: "bg-cherry", note: "needs a look" },
 };
 
 export default async function BoardPage({
@@ -154,8 +153,8 @@ function EmptyBoard({ isAdmin, owner }: { isAdmin: boolean; owner: string }) {
       </p>
       <p className="m-0 mx-auto mt-[11px] max-w-[46ch] text-[15.5px] leading-[1.5] text-ink-2">
         {isAdmin
-          ? "When someone in the group sends a model it lands on the rail, and you get a notification."
-          : `Drop an .stl or .3mf and it turns up here as a ticket ${owner} can work through.`}
+          ? "When someone in the group pastes a model link it lands on the rail, and you get a notification."
+          : `Paste a model link and it turns up here as a ticket ${owner} can work through.`}
       </p>
     </div>
   );

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { requireUser, printerName } from "@/lib/authz";
 import { storyRef } from "@/lib/scope";
 import { HISTORY_STATUSES, listHistory } from "@/lib/stories";
-import { MATERIALS, relativeTime } from "@/lib/catalog";
+import { relativeTime } from "@/lib/catalog";
 import { AppHeader } from "@/components/app-header";
 import { Kicker, StatusChip } from "@/components/ui";
 import { RequeueStory } from "@/components/requeue-story";
@@ -51,8 +51,9 @@ export default async function HistoryPage({
     status && (HISTORY_STATUSES as readonly string[]).includes(status)
       ? (status as StoryStatus)
       : undefined;
-  const materialFilter =
-    material && (MATERIALS as readonly string[]).includes(material) ? material : undefined;
+  // Material is no longer a closed list — it's whatever a picked spool
+  // reported at intake — so any non-empty value is honoured as-is.
+  const materialFilter = material?.trim() ? material.trim() : undefined;
   const sincePreset = SINCE.find((s) => s.key === since) ?? SINCE[3]; // default: all time
 
   const stories = await listHistory(user, {
@@ -76,9 +77,9 @@ export default async function HistoryPage({
           {isAdmin ? "Everything the group has printed" : "Your print history"}
         </h1>
         <p className="m-0 mb-[22px] max-w-[62ch] text-[15px] text-ink-2">
-          The jobs that have left the rail — delivered, done, or declined. Found the
+          The jobs that have left the rail — done, failed, or declined. Found the
           one you want again? <strong>Print again</strong> opens a fresh request from
-          the same file, no re-upload.
+          the same link.
         </p>
 
         {/* ---- filters: a plain GET form, so it works with JS off ---- */}
@@ -97,12 +98,12 @@ export default async function HistoryPage({
           </label>
           <label className="flex flex-col gap-[4px]">
             <span className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-ink-2">Material</span>
-            <select name="material" defaultValue={materialFilter ?? ""} className={selectClass}>
-              <option value="">Any</option>
-              {MATERIALS.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
+            <input
+              name="material"
+              defaultValue={materialFilter ?? ""}
+              placeholder="Any"
+              className={selectClass}
+            />
           </label>
           <label className="flex flex-col gap-[4px]">
             <span className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-ink-2">Filed</span>
@@ -148,7 +149,7 @@ export default async function HistoryPage({
                 <span
                   aria-hidden
                   className="h-[40px] w-[40px] flex-none rounded-full border-[3px] border-ink"
-                  style={{ background: story.colorHex }}
+                  style={{ background: story.colorHex ? `#${story.colorHex.replace(/^#/, "")}` : "#b6bcc2" }}
                 />
                 <div className="min-w-[180px] flex-[1_1_240px]">
                   <Link
