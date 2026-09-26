@@ -1,19 +1,10 @@
 import { printerName, requireUser } from "@/lib/authz";
-import { listSpools } from "@/lib/bambuddy";
+import { isPla, listSpools } from "@/lib/bambuddy";
 import { AppHeader } from "@/components/app-header";
 import { Kicker, Notice } from "@/components/ui";
 import { UploadForm } from "./upload-form";
 
 export const dynamic = "force-dynamic";
-
-/**
- * Only PLA is offered — the one Slicer Pipeline this deployment has is a
- * fixed "standard PLA" recipe (see BAMBUDDY_PIPELINE_ID in .env.example).
- * Picking any other material here would slice cleanly and print wrong.
- */
-function isPla(material: string): boolean {
-  return material.toUpperCase().includes("PLA");
-}
 
 export default async function UploadPage({
   searchParams,

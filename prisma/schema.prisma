@@ -306,6 +306,11 @@ model Story {
   queueItemId         Int?
   archiveId           Int?
 
+  /// Set when `processIntake` claims the row, so the synchronous call from
+  /// intake and a cron tick can't both run it. Cleared on failure; a stale
+  /// claim (a crashed run) expires — see INTAKE_LEASE_MS in bambuddy-sync.ts.
+  intakeStartedAt DateTime?
+
   /// Bambuddy's error_message on a Failed status — shown to the requester
   /// as-is rather than a generic "something went wrong".
   errorMessage String?

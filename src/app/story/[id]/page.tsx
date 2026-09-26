@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { getStoryOr404, printerName, requireUser, storyRef, BOARD } from "@/lib/authz";
 import { quantityText, relativeTime } from "@/lib/catalog";
+import { isHttpUrl } from "@/lib/stories";
 import { AppHeader } from "@/components/app-header";
 import { Fact, Notice, StatusChip } from "@/components/ui";
 import { AdminActions } from "@/components/admin-actions";
@@ -66,15 +67,23 @@ export default async function StoryPage({
                 </p>
               </div>
               <div className="p-[17.6px]">
-                <a
-                  href={story.modelUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block break-all font-mono text-[13px] text-ink underline underline-offset-4 hover:text-cherry-dk"
-                >
-                  {story.resolvedTitle ?? story.modelUrl}
-                </a>
-                {story.resolvedTitle && (
+                {/* Validated at intake too; checked again here so a row that
+                    predates the check can never become a clickable javascript: link. */}
+                {isHttpUrl(story.modelUrl) ? (
+                  <a
+                    href={story.modelUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block break-all font-mono text-[13px] text-ink underline underline-offset-4 hover:text-cherry-dk"
+                  >
+                    {story.resolvedTitle ?? story.modelUrl}
+                  </a>
+                ) : (
+                  <p className="m-0 break-all font-mono text-[13px] text-ink-3">
+                    {story.modelUrl || "No model link — this request predates link intake."}
+                  </p>
+                )}
+                {story.resolvedTitle && isHttpUrl(story.modelUrl) && (
                   <p className="m-0 mt-[6px] break-all font-mono text-[11px] text-ink-3">
                     {story.modelUrl}
                   </p>

@@ -89,6 +89,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * How long a `processIntake` claim holds before another caller may take the
+ * story over. Far longer than a healthy run (~40s of polling plus a few
+ * Bambuddy calls), so it only ever expires on a process that died mid-run.
+ */
+const INTAKE_LEASE_MS = 10 * 60 * 1000;
+
 const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
 
 /**
@@ -121,6 +128,24 @@ export async function processIntake(storyId: number): Promise<void> {
     },
   });
   if (!story || story.status !== "Requested" || story.libraryFileId) return;
+
+  // The check above is only a snapshot, and nothing is written for ~40s
+  // below — long enough for a cron tick to start a second import of the same
+  // story. Claim the row atomically; whoever loses the race backs off.
+  const now = new Date();
+  const claimed = await db.story.updateMany({
+    where: {
+      id: story.id,
+      status: "Requested",
+      libraryFileId: null,
+      OR: [
+        { intakeStartedAt: null },
+        { intakeStartedAt: { lt: new Date(now.getTime() - INTAKE_LEASE_MS) } },
+      ],
+    },
+    data: { intakeStartedAt: now },
+  });
+  if (claimed.count === 0) return;
 
   try {
     const resolved = await resolveMakerWorldUrl(story.modelUrl);
@@ -211,7 +236,7 @@ export async function processIntake(storyId: number): Promise<void> {
         ? error.message
         : "Bambuddy couldn't take this request. It'll retry automatically."; // detail withheld from the requester; see the audit row for the real message
 
-    await db.story.update({ where: { id: story.id }, data: { errorMessage: message } });
+    await db.story.update({ where: { id: story.id }, data: { errorMessage: message, intakeStartedAt: null } });
 
     if (story.errorMessage !== message) {
       await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — needs attention: ${message}`, story.id);

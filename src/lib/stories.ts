@@ -14,7 +14,7 @@ import {
   storyScope,
   type Actor,
 } from "@/lib/scope";
-import { listSpools } from "@/lib/bambuddy";
+import { isPla, listSpools } from "@/lib/bambuddy";
 import { processIntake } from "@/lib/bambuddy-sync";
 import { QuantitySchema } from "@/lib/catalog";
 
@@ -92,6 +92,21 @@ export const BodySchema = z
   .max(2000, "That is longer than a comment wants to be.");
 
 /**
+ * True only for an absolute http(s) URL. `modelUrl` is rendered as an
+ * `<a href>`, so anything else — `javascript:`, `data:` — is script waiting
+ * for a click. The story page checks again before linking, which also covers
+ * legacy rows whose link is the empty string.
+ */
+export function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * A new request: a link, not a file. `spoolId` is the only way color and
  * material reach the row — see `createStoryFromLink`, which looks the spool
  * up in live Bambuddy inventory rather than trusting a client-supplied name
@@ -107,7 +122,8 @@ export const CreateStorySchema = z.object({
     .string()
     .trim()
     .min(1, "Paste a model link.")
-    .max(2000, "That link is too long."),
+    .max(2000, "That link is too long.")
+    .refine(isHttpUrl, "That doesn't look like a web link — paste the page's https:// address."),
   spoolId: z.coerce.number().int().positive("Pick a color."),
   quantity: QuantitySchema,
   note: z.string().trim().max(2000, "That note is very long.").optional().default(""),
@@ -494,6 +510,10 @@ export async function createStoryFromLink(actor: Actor, input: CreateStoryInput)
   if (!spool) {
     throw problem(409, "That color isn't available any more — refresh and pick again.");
   }
+  if (!isPla(spool.material)) {
+    // The picker only offers PLA, but the API takes any spool id.
+    throw problem(400, "Only PLA can be printed here — pick a PLA color.");
+  }
 
   const story = await db.story.create({
     data: {
@@ -622,6 +642,9 @@ export async function requeueStory(actor: Actor, id: number) {
   if (!src) throw problem(404, "That ticket no longer exists.");
   if (src.uploaderId !== actor.id) {
     throw problem(403, "Only the person who asked for it can print it again.");
+  }
+  if (!isHttpUrl(src.modelUrl)) {
+    throw problem(409, "This ticket has no model link to print from — submit it again as a new request.");
   }
 
   const created = await db.story.create({

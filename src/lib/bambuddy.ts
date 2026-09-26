@@ -284,6 +284,16 @@ export type Spool = {
   archived_at: string | null;
 };
 
+/**
+ * Only PLA can be requested — the one Slicer Pipeline (see `pipelineId`) is a
+ * fixed standard-PLA recipe, so any other material would slice cleanly and
+ * print wrong. The intake form filters its picker with this, and
+ * `createStoryFromLink` enforces it server-side.
+ */
+export function isPla(material: string): boolean {
+  return material.toUpperCase().includes("PLA");
+}
+
 export async function listSpools(): Promise<Spool[]> {
   const spools = await bambuddyFetch<Spool[]>("/api/v1/inventory/spools");
   return spools.filter((spool) => !spool.archived_at);
