@@ -368,6 +368,7 @@ has no outbound internet, set `HIBP_DISABLED=true` — and only then.
 | **[Authentication](docs/authentication.md)** | invite-only registration, passwords, passkeys, resets, and why each decision went the way it did |
 | **[Architecture](docs/architecture.md)** | link intake and the Bambuddy sync, decisions taken against the design handoff, and the file layout |
 | **[Deployment](docs/deployment.md)** | containers, reverse proxies, the deploy wizard, TLS, first run |
+| **[Unraid](docs/unraid.md)** | the same stack for Compose Manager behind SWAG, step by step |
 | **[Feature requests](docs/feature-requests.md)** | the `/frr` track — file a request, triage it exactly like the print backlog |
 | **[The API](docs/api.md)** | the JSON surface, bearer tokens, the OpenAPI document and the console at `/docs` |
 | **[Development](docs/development.md)** | stack, local setup, the verification suites, CI |

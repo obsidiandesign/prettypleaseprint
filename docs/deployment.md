@@ -49,6 +49,10 @@ To run the verification suites against the containerised app, add
 SMTP port so the host-side scripts can reach them. **Never apply that overlay
 on a deployed host** — those are internal services.
 
+**On Unraid**, with the Compose Manager plugin behind SWAG, see
+**[Running it on Unraid](unraid.md)** instead: one compose file, an ENV file,
+a SWAG proxy-conf and a User Scripts entry for the sync, in `deploy/unraid/`.
+
 ## Deploying to TrueNAS SCALE, behind Nginx Proxy Manager
 
 Bind mounts under a dataset rather than named volumes, following the pattern

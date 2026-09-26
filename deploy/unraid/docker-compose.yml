@@ -1,0 +1,90 @@
+# Pretty Please Print on Unraid — one file, for the Compose Manager plugin.
+#
+# The walkthrough is docs/unraid.md. In short: make a stack in Compose Manager,
+# paste this file in as its compose file and deploy/unraid/env.example (filled
+# in) as its ENV file, then Compose Up.
+#
+# This is docker-compose.prod.yml plus docker-compose.proxy.yml folded into a
+# single file, because Compose Manager runs one compose file per stack and
+# reads its variables from the stack's own .env. Keep it in step with those
+# two when they change.
+#
+# What it assumes about the server:
+#
+#   - SWAG is running on a user-defined Docker network (`proxynet` unless
+#     PPP_PROXY_NETWORK says otherwise). The app joins that network and
+#     publishes NO host port, so the only way in is through SWAG, over HTTPS.
+#   - The images come from your fork's GitHub Actions: ghcr.io/obsidiandesign.
+#   - Something calls the Bambuddy sync every few minutes. Nothing in this file
+#     does; see deploy/unraid/sync.sh for the User Scripts entry.
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  # Applies migrations and keeps the admin in step, then exits. The app waits
+  # for it, so it can never serve against an unmigrated schema. On the first
+  # deploy it prints a one-use link to set the admin's password:
+  #   docker logs ppp-migrate
+  migrate:
+    image: ${PPP_REGISTRY:-ghcr.io/obsidiandesign}/ppp-migrate:${PPP_TAG:-latest}
+    container_name: ppp-migrate
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://ppp:${DB_PASSWORD:?set DB_PASSWORD}@db:5432/ppp?schema=public
+      BETTER_AUTH_URL: ${APP_URL:?set APP_URL}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    image: ${PPP_REGISTRY:-ghcr.io/obsidiandesign}/ppp-app:${PPP_TAG:-latest}
+    container_name: ppp-app
+    <<: *restart
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://ppp:${DB_PASSWORD:?set DB_PASSWORD}@db:5432/ppp?schema=public
+      # Cookies, invitation links and the passkey relying party all derive from
+      # this. It must be the https:// address people type into the browser.
+      BETTER_AUTH_URL: ${APP_URL:?set APP_URL}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+    labels:
+      # Gives the container a WebUI link in Unraid's Docker tab.
+      net.unraid.docker.webui: ${APP_URL}
+    networks:
+      - default
+      - proxy
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  # Only on the stack's own network: SWAG never sees the database.
+  db:
+    image: postgres:17-alpine
+    container_name: ppp-db
+    <<: *restart
+    environment:
+      POSTGRES_USER: ppp
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+      POSTGRES_DB: ppp
+    volumes:
+      - ${DATA_ROOT:?set DATA_ROOT}/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ppp -d ppp"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+networks:
+  proxy:
+    external: true
+    name: ${PPP_PROXY_NETWORK:-proxynet}
