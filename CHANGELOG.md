@@ -274,8 +274,12 @@ Notable changes. Every entry names a released version; deployments pin
   `BAMBUDDY_API_KEY`, `BAMBUDDY_PIPELINE_ID` and `CRON_SECRET` are required,
   and something has to call `POST /api/cron/sync` on a schedule: nothing in the
   stack does. See [Bambuddy and the sync](docs/deployment.md#bambuddy-and-the-sync).
-  MinIO is still in the compose files but unused, and `$DATA_ROOT/models/` only
-  holds files from before the change.
+
+  **MinIO is gone from the stack**, along with `S3_*` in the env files. An
+  existing deployment keeps its `ppp-minio` container running, now an
+  orphan that compose no longer manages; remove it with `docker rm -f ppp-minio`. Its data
+  stays in `$DATA_ROOT/models/`, which nothing reads; keep it or delete it.
+  Leftover `S3_*` lines in `.env.docker` are harmless.
 
 - **"Feature requests" in the nav, and it goes to the board.** The owner's nav
   item was labelled *Requests* and pointed at `/frr/queue`, the triage view —

@@ -101,7 +101,6 @@ admin, and point it at Bambuddy:
 ```bash
 BETTER_AUTH_SECRET="$(openssl rand -base64 32)"
 DB_PASSWORD="$(openssl rand -hex 24)"
-S3_SECRET_KEY="$(openssl rand -hex 24)"   # still required by the compose file, unused
 CRON_SECRET="$(openssl rand -base64 32)"
 APP_URL="https://print.example.org"
 PASSKEY_RP_ID="print.example.org"
@@ -151,7 +150,6 @@ with commentary is [`.env.docker.example`](.env.docker.example).
 | `BAMBUDDY_API_KEY` | **yes** | A Bambuddy API key with **Manage Library + Manage Queue** only — no Control Printer — ideally on a dedicated service account. |
 | `BAMBUDDY_PIPELINE_ID` | **yes** | The Slicer Pipeline every request is sliced with. It must be a PLA recipe: the form only offers PLA spools. |
 | `CRON_SECRET` | **yes** | Bearer secret for `POST /api/cron/sync`. `openssl rand -base64 32`. Unset, the sync refuses every call. |
-| `S3_SECRET_KEY` | *compose* | MinIO root password. Nothing in the app uses MinIO any more, but the compose file still starts it and refuses to run without this. |
 | `APP_URL` | **yes** | The origin the browser sees, including scheme. Cookies, invitation links and the WebAuthn relying party derive from it. Must be `https://` in production. |
 | `PASSKEY_RP_ID` | **yes** | Registrable domain, no scheme or port. **Permanent** — changing it kills every enrolled passkey. |
 | `PASSKEY_RP_NAME` | | Shown in the browser's passkey prompt. |
@@ -210,10 +208,12 @@ Everything that matters is under `DATA_ROOT` plus one file:
 | | |
 | --- | --- |
 | `$DATA_ROOT/db/` | Postgres — accounts, tickets, comments, the audit trail |
-| `$DATA_ROOT/models/` | model files from before link intake. Nothing new is written here; keep it only if you want the old uploads |
 | `.env.docker` | the secrets. **Not** under `DATA_ROOT`, and not in the repo. |
 
-On ZFS, one recursive snapshot of the parent dataset captures all three:
+A deployment that predates link intake may also have `$DATA_ROOT/models/`,
+MinIO's old uploads. Nothing reads it any more; keep or delete it as you like.
+
+On ZFS, one recursive snapshot of the parent dataset captures both:
 
 ```bash
 zfs snapshot -r storage/applications/ppp@$(date +%F)
@@ -248,10 +248,9 @@ docker compose --env-file .env.docker -f docker-compose.prod.yml down
 
 # 2. put the data back (ZFS rollback, or extract the archive)
 zfs rollback storage/applications/ppp/data/db@2026-08-23
-zfs rollback storage/applications/ppp/data/models@2026-08-23
 #   without ZFS, from the container-made archive:
 #   docker run --rm -v "$DATA_ROOT:/data" -v "$PWD:/backup:ro" alpine \
-#     sh -c 'rm -rf /data/db /data/models && tar xzf /backup/ppp-2026-08-23.tgz -C /data'
+#     sh -c 'rm -rf /data/db && tar xzf /backup/ppp-2026-08-23.tgz -C /data'
 
 # 3. bring it up; the migrator applies any pending migrations
 docker compose --env-file .env.docker -f docker-compose.prod.yml up -d

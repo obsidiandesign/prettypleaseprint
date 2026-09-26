@@ -15,24 +15,6 @@ services:
       timeout: 3s
       retries: 10
 
-  # Credentials here are literally named 'dev-only-not-a-secret' so that a
-  # copy-paste into a real deployment is impossible to miss. The production
-  # stack (docker-compose.prod.yml) refuses to start without real ones.
-  # Model files (.stl/.3mf) live here, never in the web root. Served only
-  # through signed URLs gated by the ownership check in src/lib/authz.ts.
-  minio:
-    # Same pin as docker-compose.prod.yml, and for the same reason: the Docker
-    # Hub repository is gone. Keep the two in step.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
-    container_name: ppp-minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ppp
-      MINIO_ROOT_PASSWORD: dev-only-not-a-secret
-    ports: ["9000:9000", "9001:9001"]
-    volumes: ["miniodata:/data"]
-
   # Catches every outbound email in dev. Web UI on http://localhost:8025
   mailpit:
     image: axllent/mailpit:latest
@@ -42,4 +24,3 @@ services:
 
 volumes:
   pgdata:
-  miniodata:

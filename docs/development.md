@@ -10,7 +10,7 @@
 | Auth | [Better Auth](https://better-auth.com) 1.7 — username/password, passkeys, breach check, admin plugin |
 | Data | Prisma 6 → PostgreSQL 17 |
 | Styling | Tailwind v4, design tokens from the handoff as CSS variables |
-| Local infra | Docker Compose: Postgres, Mailpit (mail), and MinIO, which nothing uses any more |
+| Local infra | Docker Compose: Postgres, Mailpit (mail) |
 | Print farm | a Bambuddy instance on the LAN — see [Bambuddy and the sync](deployment.md#bambuddy-and-the-sync) |
 
 Chosen to match the existing house style (`huere-siech` is Next 15 + Prisma,
@@ -20,7 +20,7 @@ Chosen to match the existing house style (`huere-siech` is Next 15 + Prisma,
 
 ```bash
 cp .env.example .env          # then set BETTER_AUTH_SECRET, and the BAMBUDDY_* block
-docker compose up -d          # postgres :5432, minio :9000, mailpit :8025
+docker compose up -d          # postgres :5432, mailpit :8025
 npm install
 npm run db:migrate
 npm run db:seed               # creates the one admin from ADMIN_EMAIL/ADMIN_NAME
@@ -85,13 +85,12 @@ as four gates that can be required by name in branch protection:
 | Gate | What it does |
 | --- | --- |
 | `guard` | typecheck, and the secret scanner over every tracked file |
-| `verify` | raises the real compose stack and runs all five integration suites against the built image, **including the WebAuthn ceremonies in a headless Chrome** |
+| `verify` | raises the real compose stack and runs every integration suite against the built image, **including the WebAuthn ceremonies in a headless Chrome** |
 | `trivy` | filesystem scan for vulnerabilities, secrets and misconfiguration; HIGH/CRITICAL fail |
 
-`verify` uses docker compose rather than GitHub `services:` for two reasons:
-`services:` cannot override a container's command, which MinIO needs, and
-running the same command a developer runs puts **the compose files themselves
-under test**. A broken overlay fails in CI rather than on the NAS.
+`verify` uses docker compose rather than GitHub `services:` because running
+the same command a developer runs puts **the compose files themselves under
+test**. A broken overlay fails in CI rather than on the NAS.
 
 Two more workflows:
 

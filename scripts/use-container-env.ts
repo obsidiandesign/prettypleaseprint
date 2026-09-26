@@ -40,10 +40,6 @@ const written = [
   `DATABASE_URL="postgresql://ppp:${need("DB_PASSWORD")}@localhost:5432/ppp?schema=public"`,
   `BETTER_AUTH_URL="${need("APP_URL", "http://localhost:3000")}"`,
   `BETTER_AUTH_SECRET="${need("BETTER_AUTH_SECRET")}"`,
-  `S3_ENDPOINT="http://localhost:9000"`,
-  `S3_BUCKET="${need("S3_BUCKET", "ppp-models")}"`,
-  `S3_ACCESS_KEY="${need("S3_ACCESS_KEY", "ppp")}"`,
-  `S3_SECRET_KEY="${need("S3_SECRET_KEY")}"`,
   `ADMIN_EMAIL="${need("ADMIN_EMAIL")}"`,
   `ADMIN_NAME="${need("ADMIN_NAME")}"`,
   `MAIL_FROM="${need("MAIL_FROM")}"`,
@@ -57,6 +53,5 @@ writeFileSync(TARGET, written);
 console.info(
   `.env now points at the container stack (previous saved to ${TARGET}.backup).\n` +
     `  database  localhost:5432\n` +
-    `  storage   localhost:9000\n` +
     `  mail      localhost:1025 (Mailpit UI on :8025)`,
 );

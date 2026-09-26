@@ -4,7 +4,7 @@
 
 ## Running it in containers
 
-The dev stack (`docker-compose.yml`) runs Postgres, MinIO and Mailpit while the
+The dev stack (`docker-compose.yml`) runs Postgres and Mailpit while the
 app runs on the host under `npm run dev`. That is the loop for building.
 
 `docker-compose.prod.yml` runs **everything**, including the app, and is also
@@ -45,7 +45,7 @@ unmigrated schema. The **runner** is the slim runtime — standalone Next output
 non-root, with a healthcheck.
 
 To run the verification suites against the containerised app, add
-`-f docker-compose.test.yml`, which publishes Postgres, MinIO and Mailpit's
+`-f docker-compose.test.yml`, which publishes Postgres and Mailpit's
 SMTP port so the host-side scripts can reach them. **Never apply that overlay
 on a deployed host** — those are internal services.
 
@@ -342,9 +342,9 @@ and so will the database, and it never resets a password that already exists.
 
 ### What to back up
 
-Everything is under `DATA_ROOT`: `db/` (Postgres), and `models/` on a
-deployment old enough to have taken uploads (nothing new is written there). A
-ZFS snapshot of the dataset captures both. `.env.docker` holds the
+Everything is under `DATA_ROOT`: `db/`, which is Postgres. A deployment old
+enough to have taken uploads also has `models/`, MinIO's old files, which
+nothing reads any more. A ZFS snapshot of the dataset captures it all. `.env.docker` holds the
 secrets and is not in the repo — keep it somewhere you will still have it after
 a rebuild, because losing `BETTER_AUTH_SECRET` invalidates every session and
 losing `DB_PASSWORD` locks you out of the database.

@@ -62,8 +62,8 @@ The upload endpoint and its byte-level validator, object storage, the model
 download route and the "Open in PrusaSlicer" link credential are all deleted,
 along with `verify:models` and the probes that covered them. The in-memory
 upload buffering and the unserved signed URLs listed under
-[Open items](#open-items) went with them. MinIO is still started by the compose
-files but nothing talks to it.
+[Open items](#open-items) went with them. MinIO is gone from the compose files
+too.
 
 ### Surface that arrived
 

@@ -6,7 +6,7 @@
 #     -f docker-compose.prod.yml -f docker-compose.test.yml \
 #     --profile mailcatcher up -d --build
 #
-# Never apply this on a deployed host. Postgres and MinIO are internal
+# Never apply this on a deployed host. Postgres and Mailpit are internal
 # services, and the app should only ever be reached through the proxy.
 services:
   app:
@@ -15,10 +15,6 @@ services:
   db:
     ports:
       - "5432:5432"
-  minio:
-    ports:
-      - "9000:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
   mailpit:
     ports:
       # 8025 is the web UI where invitation and reset links show up;
