@@ -74,9 +74,23 @@ export class BambuddyCloudExpiredError extends BambuddyError {
   }
 }
 
-async function bambuddyFetch<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * How long a Bambuddy call may take before it's abandoned. Without a limit, an
+ * unreachable Bambuddy (a VLAN the container can't route to, say) holds a
+ * request open until the OS gives up on the connection, and a page waiting on
+ * it looks like a link that does nothing. Calls that do real work on
+ * Bambuddy's side pass their own, longer limit.
+ */
+const DEFAULT_TIMEOUT_MS = 15_000;
+
+async function bambuddyFetch<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<T> {
   const res = await fetch(`${baseUrl()}${path}`, {
     ...init,
+    signal: AbortSignal.timeout(timeoutMs),
     headers: {
       "X-API-Key": apiKey(),
       "Content-Type": "application/json",
@@ -146,10 +160,12 @@ export async function importMakerWorldModel(params: {
   source_type?: string;
   profile_id?: number | null;
 }): Promise<MakerWorldImportResponse> {
-  return bambuddyFetch<MakerWorldImportResponse>("/api/v1/makerworld/import", {
-    method: "POST",
-    body: JSON.stringify(params),
-  });
+  // Bambuddy downloads the model from MakerWorld before answering.
+  return bambuddyFetch<MakerWorldImportResponse>(
+    "/api/v1/makerworld/import",
+    { method: "POST", body: JSON.stringify(params) },
+    120_000,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -193,10 +209,16 @@ export type PipelineRun = {
 };
 
 export async function runSlicerPipeline(sourceLibraryFileId: number, copies = 1): Promise<PipelineRun> {
-  return bambuddyFetch<PipelineRun>(`/api/v1/slicer-pipelines/${pipelineId()}/run`, {
-    method: "POST",
-    body: JSON.stringify({ source_library_file_id: sourceLibraryFileId, copies }),
-  });
+  // Generous on purpose: if this gave up while Bambuddy went on to create the
+  // run anyway, intake would retry and start a second one.
+  return bambuddyFetch<PipelineRun>(
+    `/api/v1/slicer-pipelines/${pipelineId()}/run`,
+    {
+      method: "POST",
+      body: JSON.stringify({ source_library_file_id: sourceLibraryFileId, copies }),
+    },
+    60_000,
+  );
 }
 
 /**
@@ -300,6 +322,7 @@ export function isPla(material: string): boolean {
 }
 
 export async function listSpools(): Promise<Spool[]> {
-  const spools = await bambuddyFetch<Spool[]>("/api/v1/inventory/spools");
+  // Short: a person is waiting on the order page for this.
+  const spools = await bambuddyFetch<Spool[]>("/api/v1/inventory/spools", undefined, 5_000);
   return spools.filter((spool) => !spool.archived_at);
 }

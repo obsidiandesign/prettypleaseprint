@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+
 import { printerName, requireUser } from "@/lib/authz";
 import { isPla, listSpools } from "@/lib/bambuddy";
 import { listActiveBenefits } from "@/lib/benefits";
@@ -18,17 +20,6 @@ export default async function UploadPage({
   const benefits = tipJarEnabled
     ? (await listActiveBenefits()).map((b) => ({ label: b.label, preferred: b.preferred }))
     : null;
-
-  // A live read, not cached data — the whole point of the colour picker is
-  // that it can't drift from what's actually on the shelf. A Bambuddy hiccup
-  // here means an empty picker rather than a broken page.
-  let spools: Awaited<ReturnType<typeof listSpools>> = [];
-  let inventoryError = false;
-  try {
-    spools = (await listSpools()).filter((s) => isPla(s.material));
-  } catch {
-    inventoryError = true;
-  }
 
   return (
     <>
@@ -51,17 +42,54 @@ export default async function UploadPage({
             <Notice tone="warn">{error}</Notice>
           </div>
         )}
-        {inventoryError && (
-          <div className="mb-[22px] max-w-[780px]">
-            <Notice tone="warn">
-              Couldn&rsquo;t reach Bambuddy for the colour list just now — try
-              refreshing this page in a moment.
-            </Notice>
-          </div>
-        )}
-
-        <UploadForm owner={owner} spools={spools} benefits={benefits} />
+        {/* Streamed, so the page itself arrives at once and only the part
+            that needs Bambuddy waits for it. Blocking the whole page on the
+            spool list made a click on "Order up" look like it did nothing
+            whenever Bambuddy was slow or unreachable. */}
+        <Suspense
+          fallback={
+            <div className="max-w-[780px]">
+              <Notice>Checking which colours are on the shelf…</Notice>
+            </div>
+          }
+        >
+          <ShelfAndForm owner={owner} benefits={benefits} />
+        </Suspense>
       </main>
+    </>
+  );
+}
+
+async function ShelfAndForm({
+  owner,
+  benefits,
+}: {
+  owner: string;
+  benefits: { label: string; preferred: boolean }[] | null;
+}) {
+  // A live read, not cached data — the whole point of the colour picker is
+  // that it can't drift from what's actually on the shelf. A Bambuddy hiccup
+  // here (listSpools gives up after a few seconds) means an empty picker
+  // rather than a broken page.
+  let spools: Awaited<ReturnType<typeof listSpools>> = [];
+  let inventoryError = false;
+  try {
+    spools = (await listSpools()).filter((s) => isPla(s.material));
+  } catch {
+    inventoryError = true;
+  }
+
+  return (
+    <>
+      {inventoryError && (
+        <div className="mb-[22px] max-w-[780px]">
+          <Notice tone="warn">
+            Couldn&rsquo;t reach Bambuddy for the colour list just now — try
+            refreshing this page in a moment.
+          </Notice>
+        </div>
+      )}
+      <UploadForm owner={owner} spools={spools} benefits={benefits} />
     </>
   );
 }

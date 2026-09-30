@@ -18,9 +18,6 @@
 #   - Something calls the Bambuddy sync every few minutes. Nothing in this file
 #     does; see deploy/unraid/sync.sh for the User Scripts entry.
 
-x-restart: &restart
-  restart: unless-stopped
-
 services:
   # Applies migrations and keeps the admin in step, then exits. The app waits
   # for it, so it can never serve against an unmigrated schema. On the first
@@ -41,7 +38,7 @@ services:
   app:
     image: ${PPP_REGISTRY:-ghcr.io/obsidiandesign}/ppp-app:${PPP_TAG:-latest}
     container_name: ppp-app
-    <<: *restart
+    restart: unless-stopped
     env_file: [.env]
     environment:
       DATABASE_URL: postgresql://ppp:${DB_PASSWORD:?set DB_PASSWORD}@db:5432/ppp?schema=public
@@ -76,7 +73,7 @@ services:
   db:
     image: postgres:17-alpine
     container_name: ppp-db
-    <<: *restart
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ppp
       POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}

@@ -145,8 +145,8 @@ never leaves the ENV file and the sync route can stay blocked at SWAG.
 
 If Bambuddy runs on its own VLAN network (a custom network like `br0.50`), the
 app may not be able to reach it even when the Unraid host can. The sign is the
-order page: it takes a long time, then says it couldn't reach Bambuddy's
-colour list. To confirm:
+order page: after a few seconds of "Checking which colours are on the shelf",
+it says it couldn't reach Bambuddy's colour list. To confirm:
 
 ```bash
 # the host
@@ -273,8 +273,8 @@ ownership to the container's `postgres` user (uid 70):
 chown -R 70:70 /mnt/cache/appdata/pretty-please-print/db
 ```
 
-**The order page takes ages, then says it couldn't reach Bambuddy.** The
-app can't reach `BAMBUDDY_URL`. If Bambuddy is on its own VLAN, see
+**The order page says it couldn't reach Bambuddy's colour list.** The app
+can't reach `BAMBUDDY_URL` (it gives up after five seconds). If Bambuddy is on its own VLAN, see
 [Bambuddy on another VLAN](#bambuddy-on-another-vlan).
 
 **Tickets stay `Requested`, or stop moving.** Run the sync script by hand and
