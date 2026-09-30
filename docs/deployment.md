@@ -212,18 +212,26 @@ On the Bambuddy side, once:
    only. Leave Control Printer off: a compromise of this app can then slice and
    queue, but never start, stop or touch a running print. A dedicated account
    keeps the key working if your own account's role changes.
-2. **A Slicer Pipeline for PLA.** Its id goes in `BAMBUDDY_PIPELINE_ID`. Every
-   request uses it, whatever colour was picked, which is why the form only
-   offers PLA spools. Its dispatch settings should add the result to the print
-   queue: a run that never produces a queue entry is marked `Failed` after two
+2. **Slicer Pipelines for PLA, one per filament count.** Make one pipeline
+   (printer, process, bed and dispatch settings as you like), then copies of
+   it with **1, 2, 3 and 4** "PLA Basic" filament presets. List their ids in
+   `BAMBUDDY_PIPELINES`, e.g. `"5,6,7,1"`. The app picks per model, because
+   Bambu Studio crashes when a pipeline loads more filaments than a
+   multi-colour model defines (a 4-preset pipeline can't slice a 2- or
+   3-colour model). With only `BAMBUDDY_PIPELINE_ID`, single-colour and
+   4-colour models still work and the rest are flagged to you. Every request
+   is PLA whatever colour was picked, which is why the form only offers PLA
+   spools. The dispatch settings should add the result to the print queue: a
+   run that never produces a queue entry is marked `Failed` after two
    minutes, with a pointer back here.
 3. **Bambu Cloud signed in.** MakerWorld downloads go through it. When that
    sign-in expires, new requests wait in `Requested` with a message, the admin
    is told once, and they carry on by themselves once it is renewed.
 
 Then in `.env.docker`: `BAMBUDDY_URL`, `BAMBUDDY_API_KEY`,
-`BAMBUDDY_PIPELINE_ID` and `CRON_SECRET`. In production the app refuses a
-Bambuddy call with any of the first three missing.
+`BAMBUDDY_PIPELINES` (or `BAMBUDDY_PIPELINE_ID`) and `CRON_SECRET`. In
+production the app refuses a Bambuddy call without the URL, the key, or a
+pipeline.
 
 **Schedule the sync — nothing in the stack does.** Status moves by polling
 Bambuddy, and `POST /api/cron/sync` is the poll. It needs

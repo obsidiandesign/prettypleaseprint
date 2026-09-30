@@ -4,17 +4,20 @@ import type { Prisma, StoryStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { record } from "@/lib/audit";
 import { notify, printerOwner } from "@/lib/authz";
-import { AMS_SLOTS, deriveStatus, isTerminal, storyRef } from "@/lib/scope";
+import { AMS_SLOTS, deriveStatus, isTerminal, pickPipeline, storyRef } from "@/lib/scope";
 import {
   BambuddyCloudExpiredError,
   BambuddyError,
-  getFilamentRequirements,
+  getFilamentSlots,
   getPipelineRun,
+  getSlicerPipeline,
   getQueueItem,
   importMakerWorldModel,
+  pipelineIds,
   resolveMakerWorldUrl,
   runSlicerPipeline,
   setManualStart,
+  type FilamentRequirement,
   type MakerWorldResolvedModel,
   type PipelineRun,
 } from "@/lib/bambuddy";
@@ -35,7 +38,16 @@ import {
  * a raw `BambuddyError` — the message is meant to reach the admin verbatim,
  * the way `BambuddyCloudExpiredError`'s does.
  */
-class IntakeProblem extends Error {}
+/**
+ * An intake failure worth naming, rather than the generic retry message.
+ * `message` is shown on the ticket, to the requester; `adminDetail`, when
+ * given, is what the printer owner is told instead — the part they can act on.
+ */
+class IntakeProblem extends Error {
+  constructor(message: string, readonly adminDetail?: string) {
+    super(message);
+  }
+}
 
 async function notifyAdmin(text: string, storyId?: number): Promise<void> {
   const owner = await printerOwner();
@@ -156,7 +168,8 @@ function hexOrNull(value: string | null): string | null {
 }
 
 /**
- * Read which colours the model uses and record them as the ticket's slots.
+ * Record the colours the model uses (read by intake, before choosing a
+ * pipeline) as the ticket's slots.
  *
  * The form's colour goes on the slot using the most filament, since that is
  * the body of the print in practice; slot numbering is the designer's and
@@ -174,13 +187,12 @@ async function recordFilaments(
     id: number; title: string; uploaderId: string;
     spoolId: number | null; material: string | null; colorName: string; colorHex: string | null;
   },
-  libraryFileId: number,
+  slots: FilamentRequirement[],
 ): Promise<void> {
   try {
+    if (slots.length === 0) return;
     if ((await db.storyFilament.count({ where: { storyId: story.id } })) > 0) return;
 
-    const slots = await getFilamentRequirements(libraryFileId);
-    if (slots.length === 0) return;
     // Most filament first, lowest slot on a tie. Confirmed live: an unsliced
     // project 3MF reports 0 g for every slot (only a pre-sliced .gcode.3mf
     // knows its usage), so for most MakerWorld models this is simply slot 1.
@@ -219,6 +231,53 @@ async function recordFilaments(
   } catch (error) {
     console.error(`[intake] ${storyRef(story.id)}: couldn't read the model's colours`, error);
   }
+}
+
+/**
+ * The pipeline to slice this model with — see `pickPipeline` for the rule
+ * and `pipelineIds` for where the candidates come from. With the model's
+ * colours unknown (the read failed), the first configured pipeline, which is
+ * what every request used before there was more than one.
+ */
+async function choosePipeline(used: number, projectSlots: number): Promise<number> {
+  const ids = pipelineIds();
+  if (ids.length === 0) {
+    throw new IntakeProblem(
+      "The printer isn't set up to slice yet — the printer owner has been told.",
+      "No Slicer Pipeline is configured: set BAMBUDDY_PIPELINES (or BAMBUDDY_PIPELINE_ID).",
+    );
+  }
+  if (used === 0) return ids[0]!;
+
+  const pipelines = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const p = await getSlicerPipeline(id);
+        return { id, filaments: p.filament_presets.length };
+      } catch (error) {
+        if (error instanceof BambuddyError && error.status === 404) {
+          throw new IntakeProblem(
+            "The printer isn't set up to slice this yet — the printer owner has been told.",
+            `Slicer Pipeline ${id}, listed in BAMBUDDY_PIPELINES, doesn't exist in Bambuddy.`,
+          );
+        }
+        throw error;
+      }
+    }),
+  );
+
+  const pick = pickPipeline(pipelines, used, projectSlots);
+  if (pick) return pick.id;
+
+  const colours = `${used} colour${used === 1 ? "" : "s"}`;
+  const wanted = projectSlots <= 1 || used === projectSlots ? `${used}` : `${used} to ${projectSlots}`;
+  throw new IntakeProblem(
+    `The printer isn't set up for a model like this yet (it uses ${colours}) — the printer owner has been told.`,
+    `No Slicer Pipeline fits: the model uses ${colours} and its project defines ${projectSlots} filament ` +
+      `slot${projectSlots === 1 ? "" : "s"}. Add a PLA pipeline with ${wanted} filament presets in Bambuddy and ` +
+      `list its id in BAMBUDDY_PIPELINES (configured now: ` +
+      `${pipelines.map((p) => `#${p.id} with ${p.filaments}`).join(", ")}). It retries by itself after that.`,
+  );
 }
 
 const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
@@ -273,7 +332,7 @@ export async function processIntake(storyId: number): Promise<void> {
   if (claimed.count === 0) return;
 
   let handoff: PipelineRun;
-  let libraryFileId: number;
+  let slots: FilamentRequirement[] = [];
   let profileFellBack = false;
   try {
     const resolved = await resolveMakerWorldUrl(story.modelUrl);
@@ -312,9 +371,20 @@ export async function processIntake(storyId: number): Promise<void> {
       throw error;
     }
 
+    // The model's colours decide which pipeline can slice it. A failed read
+    // isn't fatal: choosePipeline falls back to the first pipeline, and the
+    // ticket just won't list its colours.
+    let projectSlots = 0;
+    try {
+      ({ used: slots, projectSlots } = await getFilamentSlots(imported.library_file_id));
+    } catch (error) {
+      console.error(`[intake] ${storyRef(story.id)}: couldn't read the model's colours`, error);
+    }
+    const pipelineId = await choosePipeline(slots.length, projectSlots);
+
     let run: PipelineRun;
     try {
-      run = await runSlicerPipeline(imported.library_file_id, story.quantity);
+      run = await runSlicerPipeline(pipelineId, imported.library_file_id, story.quantity);
     } catch (error) {
       // Confirmed live: refused with 409 and an eligibility report when the
       // pipeline has no target printer or model class configured — see
@@ -352,7 +422,6 @@ export async function processIntake(storyId: number): Promise<void> {
       return;
     }
     handoff = run;
-    libraryFileId = imported.library_file_id;
   } catch (error) {
     const message =
       error instanceof BambuddyCloudExpiredError || error instanceof IntakeProblem
@@ -362,13 +431,19 @@ export async function processIntake(storyId: number): Promise<void> {
     await db.story.update({ where: { id: story.id }, data: { errorMessage: message, intakeStartedAt: null } });
 
     if (story.errorMessage !== message) {
-      await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — needs attention: ${message}`, story.id);
+      const forAdmin = error instanceof IntakeProblem && error.adminDetail ? error.adminDetail : message;
+      await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — needs attention: ${forAdmin}`, story.id);
       await record({
         action: "story.intake_failed",
         subject: storyRef(story.id),
         detail: {
           title: story.title,
-          error: error instanceof Error ? error.message : String(error),
+          error:
+            error instanceof IntakeProblem && error.adminDetail
+              ? error.adminDetail
+              : error instanceof Error
+                ? error.message
+                : String(error),
           // What Bambuddy said, not just its status code: a bare "502" from
           // an import doesn't say whether MakerWorld refused the download or
           // Bambuddy couldn't reach it. Admin-only, so it's kept whole-ish.
@@ -391,7 +466,7 @@ export async function processIntake(storyId: number): Promise<void> {
     });
   }
 
-  await recordFilaments(story, libraryFileId);
+  await recordFilaments(story, slots);
 
   // Past the handoff: poll tightly to secure the queue entry early. A
   // failure here is not an intake failure — `syncStory` secures and advances

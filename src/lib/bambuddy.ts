@@ -32,12 +32,22 @@ const baseUrl = () => bambuddyEnv("BAMBUDDY_URL").replace(/\/+$/, "");
 const apiKey = () => bambuddyEnv("BAMBUDDY_API_KEY");
 
 /**
- * The one Slicer Pipeline this deployment uses — a saved "P2S, standard PLA"
- * recipe in Bambuddy. Color is picked at intake for display and spool
- * assignment only; it never selects a different pipeline, since slicing
- * only cares about material, and the only material this farm runs is PLA.
+ * The Slicer Pipelines this deployment may slice with: `BAMBUDDY_PIPELINES`
+ * (comma-separated ids), or else the single `BAMBUDDY_PIPELINE_ID`.
+ *
+ * All the same "P2S, standard PLA" recipe, differing only in how many
+ * filament presets they carry. That count matters: confirmed live, Bambu
+ * Studio's CLI aborts ("Flush volumes matrix do not match to the correct
+ * size!") when a pipeline loads more filaments than a multi-colour model's
+ * project defines — one 4-preset pipeline crashes on every 2- or 3-slot
+ * project. `pickPipeline` (scope.ts) chooses per model. Colour never
+ * selects a pipeline: every preset is PLA.
  */
-const pipelineId = () => bambuddyEnv("BAMBUDDY_PIPELINE_ID");
+export function pipelineIds(): number[] {
+  const list = process.env.BAMBUDDY_PIPELINES?.trim();
+  const raw = list ? list.split(",") : [bambuddyEnv("BAMBUDDY_PIPELINE_ID")];
+  return raw.map((id) => Number(id.trim())).filter((id) => Number.isInteger(id) && id > 0);
+}
 
 /** A Bambuddy call that did not return 2xx. `body` is the parsed JSON error, if any. */
 export class BambuddyError extends Error {
@@ -194,6 +204,24 @@ export async function getFilamentRequirements(libraryFileId: number): Promise<Fi
   return filaments.filter((f) => f.used_in_plate !== false);
 }
 
+/**
+ * The slots the plate uses, and how many the project defines in all
+ * (`full_slots`). Both matter for choosing a pipeline — see `pickPipeline` —
+ * and they differ more often than you'd think: a single-colour model's
+ * project can define six.
+ */
+export async function getFilamentSlots(
+  libraryFileId: number,
+): Promise<{ used: FilamentRequirement[]; projectSlots: number }> {
+  const [used, all] = await Promise.all([
+    getFilamentRequirements(libraryFileId),
+    bambuddyFetch<{ filaments: FilamentRequirement[] }>(
+      `/api/v1/library/files/${libraryFileId}/filament-requirements?full_slots=true`,
+    ),
+  ]);
+  return { used, projectSlots: all.filaments.length };
+}
+
 // ---------------------------------------------------------------------------
 // Slicing — Slicer Pipelines
 // ---------------------------------------------------------------------------
@@ -234,11 +262,22 @@ export type PipelineRun = {
   jobs: PipelineJob[];
 };
 
-export async function runSlicerPipeline(sourceLibraryFileId: number, copies = 1): Promise<PipelineRun> {
+/** Just what choosing between pipelines needs: how many filament presets it loads. */
+export type SlicerPipeline = { id: number; name: string; filament_presets: unknown[] };
+
+export async function getSlicerPipeline(pipelineId: number): Promise<SlicerPipeline> {
+  return bambuddyFetch<SlicerPipeline>(`/api/v1/slicer-pipelines/${pipelineId}`);
+}
+
+export async function runSlicerPipeline(
+  pipelineId: number,
+  sourceLibraryFileId: number,
+  copies = 1,
+): Promise<PipelineRun> {
   // Generous on purpose: if this gave up while Bambuddy went on to create the
   // run anyway, intake would retry and start a second one.
   return bambuddyFetch<PipelineRun>(
-    `/api/v1/slicer-pipelines/${pipelineId()}/run`,
+    `/api/v1/slicer-pipelines/${pipelineId}/run`,
     {
       method: "POST",
       body: JSON.stringify({ source_library_file_id: sourceLibraryFileId, copies }),

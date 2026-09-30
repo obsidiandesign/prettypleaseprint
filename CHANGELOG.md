@@ -379,6 +379,15 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Fixed
 
+- **2- and 3-colour models no longer crash the slicer.** A Slicer Pipeline
+  loads a fixed number of filament presets, and Bambu Studio aborts ("Flush
+  volumes matrix do not match to the correct size!") when that is more than
+  a multi-colour model defines, so the one 4-preset pipeline couldn't slice
+  them. `BAMBUDDY_PIPELINES` lists one pipeline per filament count; intake
+  reads the model's colours before slicing and picks the one that fits, and
+  flags a model nothing fits rather than starting a run that would crash.
+  `BAMBUDDY_PIPELINE_ID` alone still works.
+
 - **A failed slice now fails the ticket.** Bambuddy can leave a run whose
   slice failed as `in_progress` indefinitely (error message and completion
   time set, every copy still pending, and its cancel doesn't move it), which

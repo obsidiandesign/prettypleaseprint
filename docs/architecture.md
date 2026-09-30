@@ -36,8 +36,9 @@ clicking.
   from the spool, never from the request. They are copied onto the row on
   purpose, so the ticket keeps showing what was asked for after that spool is
   archived or restocked.
-- **PLA only.** There is one Slicer Pipeline (`BAMBUDDY_PIPELINE_ID`), a fixed
-  PLA recipe. Colour picks a spool, never a pipeline, so a PETG spool would
+- **PLA only.** Every Slicer Pipeline is the same fixed PLA recipe (they
+  differ only in filament count — see [Choosing a pipeline](#choosing-a-pipeline)).
+  Colour picks a spool, never a pipeline, so a PETG spool would
   slice cleanly and print wrong. The picker filters to PLA and the server
   refuses anything else, because the API takes any spool id.
 - Quantity, a needed-by date and a free-text note, as before.
@@ -54,9 +55,10 @@ request:
    Bambuddy's library → `libraryFileId`. If the link names a print profile
    Bambu won't serve (share links carry one), it retries once with the
    model's default profile and tells the requester.
-2. **start a pipeline run** on the one PLA pipeline, with the requested copies
-   → `pipelineRunId`, and the ticket is `Slicing`
-3. **read the model's colours** (see [Multi-colour models](#multi-colour-models))
+2. **read the model's colours**, and **choose the pipeline** that can slice
+   it (see [Choosing a pipeline](#choosing-a-pipeline))
+3. **start a pipeline run** with the requested copies → `pipelineRunId`, and
+   the ticket is `Slicing`
 4. **poll the run for ~40 s**, securing any queue entry it creates (below), and
    tell the requester where the ticket landed
 
@@ -76,10 +78,37 @@ cron tick from both importing the same story. Decline and withdraw respect the
 same claim, so they answer `409` for the few seconds intake holds a story
 rather than being overwritten mid-handoff or orphaning what it created.
 
+### Choosing a pipeline
+
+A Slicer Pipeline loads a fixed list of filament presets, and Bambu Studio's
+CLI can't take more filaments than a multi-colour project defines: it aborts
+with "Flush volumes matrix do not match to the correct size!", which reaches
+Bambuddy as a generic "Failed slicing the model". Measured through Bambuddy:
+
+| Project slots | Presets loaded | Result |
+| --- | --- | --- |
+| 1 | 1 or 4 | slices |
+| 3 | 3 | slices |
+| 3 | 4 | aborts |
+| 7 (6 used) | 6 or 7 | slices |
+
+So a deployment keeps one pipeline per filament count, all the same PLA
+recipe, and lists them in `BAMBUDDY_PIPELINES`. Intake asks Bambuddy how many
+presets each carries, reads the model's used and defined slot counts, and
+`pickPipeline` (scope.ts) takes the one closest to the used count that is at
+least that many and, for a project with two or more slots, no more than it
+defines. When nothing fits, no run is started: the ticket stays `Requested`
+with a plain message, the owner is told exactly which pipeline to add, and
+the next sync retries. If the colours can't be read, the first pipeline is
+used, as before this existed.
+
+The real fix is Bambuddy loading as many presets as the model has; until
+then, this keeps the crash from being reachable.
+
 ### Multi-colour models
 
-Right after the handoff, intake asks Bambuddy which filament slots the
-model's plate actually uses (`filament-requirements`, which reads the 3MF) and
+Before starting the run (see [Choosing a pipeline](#choosing-a-pipeline)),
+intake asks Bambuddy which filament slots the model's plate actually uses (`filament-requirements`, which reads the 3MF) and
 records one `StoryFilament` row per slot: the model's slot number, the
 designer's colour, grams, and the spool it will print in. Slot numbers are
 the designer's and arbitrary (a single-colour model's only slot was 3 in the
