@@ -148,7 +148,7 @@ export default async function QueuePage({
                             className="h-[12px] w-[12px] rounded-full border-2 border-ink"
                             style={{ background: f.designColor ?? "#b6bcc2" }}
                           />
-                          slot {f.slotId}, {Math.round(f.usedGrams)} g →{" "}
+                          slot {f.slotId}{f.usedGrams > 0 ? `, ${Math.round(f.usedGrams)} g` : ""} →{" "}
                           {f.spoolId === null ? "your choice" : f.colorName}
                         </li>
                       ))}

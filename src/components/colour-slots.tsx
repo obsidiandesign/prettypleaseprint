@@ -54,12 +54,17 @@ export function ColourSlots({
   const selectClass =
     "w-full rounded-card border-[3px] border-ink bg-porcelain px-[10px] py-[6px] text-[14px] font-bold text-ink";
 
+  const gramsKnown = slots.some((s) => s.usedGrams > 0);
   const rows = slots.map((slot, i) => {
     const main = i === 0;
+    // Grams are only known for a file that was already sliced; an ordinary
+    // MakerWorld project reports 0 for every slot, and "0 g" reads as broken.
+    const usage = gramsKnown ? ` · ${Math.round(slot.usedGrams)} g` : "";
     const heading = (
       <span className="flex items-center gap-[8.8px] font-mono text-[11.5px] font-bold uppercase tracking-[0.06em] text-ink-3">
         <Swatch hex={slot.designColor} label={`Designer's colour ${slot.designColor ?? "unknown"}`} />
-        {main ? "Main part" : `Colour ${i + 1}`} · {Math.round(slot.usedGrams)} g
+        {gramsKnown ? (main ? "Main part" : `Colour ${i + 1}`) : `Colour ${i + 1}${main ? " · main" : ""}`}
+        {usage}
       </span>
     );
 

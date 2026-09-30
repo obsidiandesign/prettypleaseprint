@@ -160,7 +160,8 @@ function hexOrNull(value: string | null): string | null {
  *
  * The form's colour goes on the slot using the most filament, since that is
  * the body of the print in practice; slot numbering is the designer's and
- * arbitrary. The other slots start as "printer's choice" until the requester
+ * arbitrary. When usage isn't known (an unsliced file, which is most), that
+ * falls back to the lowest slot. The other slots start as "printer's choice" until the requester
  * picks them on the ticket. A single-colour model ends up with one slot
  * holding the form's colour, which is exactly what the ticket showed before.
  *
@@ -180,7 +181,11 @@ async function recordFilaments(
 
     const slots = await getFilamentRequirements(libraryFileId);
     if (slots.length === 0) return;
-    const main = slots.reduce((a, b) => (b.used_grams > a.used_grams ? b : a));
+    // Most filament first, lowest slot on a tie. Confirmed live: an unsliced
+    // project 3MF reports 0 g for every slot (only a pre-sliced .gcode.3mf
+    // knows its usage), so for most MakerWorld models this is simply slot 1.
+    // stories.ts orders slots the same way, so "main" means the same there.
+    const main = [...slots].sort((a, b) => b.used_grams - a.used_grams || a.slot_id - b.slot_id)[0]!;
 
     await db.storyFilament.createMany({
       data: slots.map((slot) => ({

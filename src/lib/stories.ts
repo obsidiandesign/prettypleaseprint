@@ -450,7 +450,9 @@ export async function declineStory(actor: Actor, id: number) {
   // it. Declining under it would be overwritten, and the print would go on.
   const declined = await db.story.updateMany({
     where: { id: story.id, status: "Requested", ...intakeNotRunning() },
-    data: { status: "Declined" },
+    // A leftover intake error ("…it'll retry automatically") would read as a
+    // promise on a ticket that is now closed; nothing retries a Declined one.
+    data: { status: "Declined", errorMessage: null },
   });
   if (declined.count === 0) throw handingOff(story.id);
 
