@@ -9,6 +9,7 @@ import { notify, printerName, printerOwner } from "@/lib/authz";
 import {
   ALL_STATUSES,
   AuthzError,
+  COLOUR_EDITABLE,
   assertDecline,
   storyRef,
   storyScope,
@@ -159,6 +160,25 @@ export const CreateStorySchema = z.object({
 
 export type CreateStoryInput = z.infer<typeof CreateStorySchema>;
 
+/**
+ * A change to a ticket's colours: a spool per slot, or `null` for "printer's
+ * choice". Slots left out stay as they are. Spools are looked up in live
+ * inventory in `setStoryColours`, the same way the order form's colour is.
+ */
+export const ColoursSchema = z.object({
+  slots: z
+    .array(
+      z.object({
+        slotId: z.coerce.number().int().positive(),
+        spoolId: z.coerce.number().int().positive().nullable(),
+      }),
+    )
+    .min(1, "Pick at least one colour.")
+    .max(32),
+});
+
+export type ColoursInput = z.infer<typeof ColoursSchema>;
+
 /** Parse a path segment or form field into a story id, or refuse it. */
 export function storyIdOr400(raw: unknown): number {
   const parsed = IdSchema.safeParse(raw);
@@ -228,6 +248,15 @@ export const STORY_FIELDS = {
   uploaderId: true,
   uploader: { select: { id: true, name: true, initials: true } },
   _count: { select: { comments: true } },
+  // The model's colour slots, heaviest first: the first is the main part and
+  // carries the order form's colour. Empty when intake couldn't read them.
+  filaments: {
+    select: {
+      slotId: true, designColor: true, usedGrams: true,
+      spoolId: true, material: true, colorName: true, colorHex: true,
+    },
+    orderBy: [{ usedGrams: "desc" }, { slotId: "asc" }],
+  },
 } satisfies Prisma.StorySelect;
 
 export type StoryRow = Prisma.StoryGetPayload<{ select: typeof STORY_FIELDS }>;
@@ -689,6 +718,113 @@ export async function withdrawStory(actor: Actor, id: number) {
 }
 
 /**
+ * Choose the colours for a multi-colour model: a spool from the shelf per
+ * slot, or "printer's choice".
+ *
+ * The requester's call, or the printer owner's, until the print starts
+ * (`COLOUR_EDITABLE`). Colour never affects slicing here, since every request
+ * is sliced as PLA, so there is nothing to redo in Bambuddy: the owner applies
+ * the mapping when they start the print.
+ *
+ * The main slot (the most filament) must keep a real spool, because it is the
+ * ticket's own colour, the one the board shows. The form picked it, so it has
+ * one from the start.
+ */
+export async function setStoryColours(actor: Actor, id: number, raw: unknown) {
+  const parsed = ColoursSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw problem(400, parsed.error.issues[0]?.message ?? "Check the colours.");
+  }
+
+  const story = await db.story.findFirst({
+    where: { AND: [{ id }, storyScope(actor)] },
+    select: {
+      id: true, title: true, status: true, uploaderId: true,
+      filaments: {
+        select: { slotId: true },
+        orderBy: [{ usedGrams: "desc" }, { slotId: "asc" }],
+      },
+    },
+  });
+  if (!story) throw problem(404, "That ticket no longer exists.");
+  if (story.uploaderId !== actor.id && actor.role !== "admin") {
+    throw problem(403, "Only the person who asked for it can choose its colours.");
+  }
+  if (!COLOUR_EDITABLE.includes(story.status)) {
+    throw problem(409, `${storyRef(story.id)} is already ${story.status.toLowerCase()}; its colours are settled.`);
+  }
+
+  const known = new Set(story.filaments.map((f) => f.slotId));
+  const mainSlot = story.filaments[0]?.slotId;
+  for (const pick of parsed.data.slots) {
+    if (!known.has(pick.slotId)) throw problem(400, `This model has no colour slot ${pick.slotId}.`);
+    if (pick.slotId === mainSlot && pick.spoolId === null) {
+      throw problem(400, "The main colour needs a spool — it's what the print is mostly made of.");
+    }
+  }
+
+  let spools;
+  try {
+    spools = await listSpools();
+  } catch (error) {
+    console.error("[colours] listSpools failed", error);
+    throw problem(503, "Can't reach the printer's inventory right now — try again in a minute.");
+  }
+
+  const updates = parsed.data.slots.map((pick) => {
+    if (pick.spoolId === null) {
+      return { slotId: pick.slotId, data: { spoolId: null, material: null, colorName: null, colorHex: null } };
+    }
+    const spool = spools.find((s) => s.id === pick.spoolId);
+    if (!spool) throw problem(409, "One of those colours isn't available any more — refresh and pick again.");
+    if (!isPla(spool.material)) throw problem(400, "Only PLA can be printed here — pick a PLA colour.");
+    return {
+      slotId: pick.slotId,
+      data: {
+        spoolId: spool.id,
+        material: spool.material,
+        colorName: spool.color_name ?? "Unnamed",
+        colorHex: spool.rgba,
+      },
+    };
+  });
+
+  await db.$transaction([
+    ...updates.map((u) =>
+      db.storyFilament.update({
+        where: { storyId_slotId: { storyId: story.id, slotId: u.slotId } },
+        data: u.data,
+      }),
+    ),
+    // The main slot is the ticket's own colour: keep the two in step, so the
+    // board, the queue and the API's `color` show what will actually print.
+    ...updates.flatMap((u) =>
+      u.slotId === mainSlot && u.data.spoolId !== null && u.data.colorName !== null
+        ? [db.story.update({ where: { id: story.id }, data: { ...u.data, colorName: u.data.colorName } })]
+        : [],
+    ),
+  ]);
+
+  const owner = await printerOwner();
+  if (owner && owner.id !== actor.id) {
+    await notify({
+      recipientId: owner.id,
+      storyId: story.id,
+      text: `${actor.name} chose the colours for “${story.title}”.`,
+    });
+  }
+  await record({
+    action: "story.colours_changed",
+    actor,
+    subject: storyRef(story.id),
+    detail: { title: story.title, slots: parsed.data.slots },
+  });
+
+  refresh(story.id);
+  return { id: story.id, ref: storyRef(story.id), title: story.title };
+}
+
+/**
  * Print an old request again, without re-pasting the link (FRR-102).
  *
  * A first print is often a test; when it works, or needs another go, this
@@ -736,6 +872,21 @@ export async function requeueStory(actor: Actor, id: number) {
     },
     select: { id: true },
   });
+
+  // The colour picks come along too: same link, same model, same slots.
+  // Intake keeps slots it finds already there rather than re-reading them.
+  const filaments = await db.storyFilament.findMany({
+    where: { storyId: src.id },
+    select: {
+      slotId: true, designColor: true, usedGrams: true,
+      spoolId: true, material: true, colorName: true, colorHex: true,
+    },
+  });
+  if (filaments.length > 0) {
+    await db.storyFilament.createMany({
+      data: filaments.map((f) => ({ ...f, storyId: created.id })),
+    });
+  }
 
   const owner = await printerOwner();
   if (owner && owner.id !== actor.id) {

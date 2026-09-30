@@ -1,9 +1,13 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getStoryOr404, printerName, requireUser, storyRef, BOARD } from "@/lib/authz";
 import { quantityText, relativeTime } from "@/lib/catalog";
 import { isHttpUrl } from "@/lib/stories";
+import { isPla, listSpools } from "@/lib/bambuddy";
+import { COLOUR_EDITABLE } from "@/lib/scope";
+import { ColourSlots, type ColourSlot } from "@/components/colour-slots";
 import { AppHeader } from "@/components/app-header";
 import { Fact, Notice, StatusChip } from "@/components/ui";
 import { AdminActions } from "@/components/admin-actions";
@@ -44,6 +48,11 @@ export default async function StoryPage({
   const currentIndex = (HAPPY_PATH as readonly string[]).indexOf(story.status);
   const branchedOff = story.status === "Declined" || story.status === "Failed";
   const swatch = story.colorHex ? `#${story.colorHex.replace(/^#/, "")}` : "#b6bcc2";
+  const multiColour = story.filaments.length > 1;
+  const canPickColours =
+    multiColour &&
+    COLOUR_EDITABLE.includes(story.status) &&
+    (story.uploader.id === user.id || user.role === "admin");
 
   return (
     <>
@@ -136,7 +145,7 @@ export default async function StoryPage({
                 <Fact label="Asked by">{story.uploader.name}</Fact>
                 <Fact label="Quantity">{quantityText(story.quantity)}</Fact>
                 <Fact label="Material">{story.material ?? "—"}</Fact>
-                <Fact label="Colour">
+                <Fact label={multiColour ? "Main colour" : "Colour"}>
                   <span className="flex items-center gap-[8.8px]">
                     <span
                       aria-hidden
@@ -153,6 +162,21 @@ export default async function StoryPage({
                 )}
               </div>
             </div>
+
+            {multiColour &&
+              (canPickColours ? (
+                // Streamed: the picker needs Bambuddy's live inventory, and a
+                // slow Bambuddy shouldn't hold up the rest of the ticket.
+                <Suspense
+                  fallback={
+                    <ColourSlots storyId={story.id} slots={story.filaments} spools={null} from={`/story/${story.id}`} />
+                  }
+                >
+                  <EditableColours storyId={story.id} slots={story.filaments} />
+                </Suspense>
+              ) : (
+                <ColourSlots storyId={story.id} slots={story.filaments} spools={null} from={`/story/${story.id}`} />
+              ))}
 
             <section className="mt-[26.4px]">
               <h2 className="m-0 mb-[13.2px] font-display text-[22px] text-ink">
@@ -266,4 +290,15 @@ export default async function StoryPage({
       {toast && <Toast>{toast}</Toast>}
     </>
   );
+}
+
+async function EditableColours({ storyId, slots }: { storyId: number; slots: ColourSlot[] }) {
+  try {
+    const spools = (await listSpools())
+      .filter((s) => isPla(s.material))
+      .map((s) => ({ id: s.id, name: s.color_name ?? "Unnamed", hex: s.rgba }));
+    return <ColourSlots storyId={storyId} slots={slots} spools={spools} from={`/story/${storyId}`} />;
+  } catch {
+    return <ColourSlots storyId={storyId} slots={slots} spools={null} inventoryError from={`/story/${storyId}`} />;
+  }
 }

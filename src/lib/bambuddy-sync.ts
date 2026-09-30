@@ -4,10 +4,11 @@ import type { Prisma, StoryStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { record } from "@/lib/audit";
 import { notify, printerOwner } from "@/lib/authz";
-import { deriveStatus, isTerminal, storyRef } from "@/lib/scope";
+import { AMS_SLOTS, deriveStatus, isTerminal, storyRef } from "@/lib/scope";
 import {
   BambuddyCloudExpiredError,
   BambuddyError,
+  getFilamentRequirements,
   getPipelineRun,
   getQueueItem,
   importMakerWorldModel,
@@ -140,6 +141,74 @@ function unqueuedReason(run: PipelineRun): string | null {
   );
 }
 
+/** `#RRGGBB` (or `#RRGGBBAA`), or null for anything else Bambuddy sends. */
+function hexOrNull(value: string | null): string | null {
+  if (!value) return null;
+  const hex = value.replace(/^#/, "");
+  return /^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(hex) ? `#${hex}` : null;
+}
+
+/**
+ * Read which colours the model uses and record them as the ticket's slots.
+ *
+ * The form's colour goes on the slot using the most filament, since that is
+ * the body of the print in practice; slot numbering is the designer's and
+ * arbitrary. The other slots start as "printer's choice" until the requester
+ * picks them on the ticket. A single-colour model ends up with one slot
+ * holding the form's colour, which is exactly what the ticket showed before.
+ *
+ * Best-effort: the handoff is already saved, and a ticket without slots just
+ * shows the form's colour. A re-queued ticket arrives with its old slots
+ * copied over (see `requeueStory`), and those are kept as they are.
+ */
+async function recordFilaments(
+  story: {
+    id: number; title: string; uploaderId: string;
+    spoolId: number | null; material: string | null; colorName: string; colorHex: string | null;
+  },
+  libraryFileId: number,
+): Promise<void> {
+  try {
+    if ((await db.storyFilament.count({ where: { storyId: story.id } })) > 0) return;
+
+    const slots = await getFilamentRequirements(libraryFileId);
+    if (slots.length === 0) return;
+    const main = slots.reduce((a, b) => (b.used_grams > a.used_grams ? b : a));
+
+    await db.storyFilament.createMany({
+      data: slots.map((slot) => ({
+        storyId: story.id,
+        slotId: slot.slot_id,
+        designColor: hexOrNull(slot.color),
+        usedGrams: slot.used_grams,
+        ...(slot === main && {
+          spoolId: story.spoolId,
+          material: story.material,
+          colorName: story.colorName,
+          colorHex: story.colorHex,
+        }),
+      })),
+      skipDuplicates: true,
+    });
+
+    if (slots.length > 1) {
+      await notify({
+        recipientId: story.uploaderId,
+        storyId: story.id,
+        text: `“${story.title}” uses ${slots.length} colours — pick the rest on the ticket.`,
+      });
+    }
+    if (slots.length > AMS_SLOTS) {
+      await notifyAdmin(
+        `${storyRef(story.id)} — “${story.title}” — needs ${slots.length} colours; the AMS holds ${AMS_SLOTS}.`,
+        story.id,
+      );
+    }
+  } catch (error) {
+    console.error(`[intake] ${storyRef(story.id)}: couldn't read the model's colours`, error);
+  }
+}
+
 const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
 
 /**
@@ -171,6 +240,7 @@ export async function processIntake(storyId: number): Promise<void> {
     select: {
       id: true, title: true, modelUrl: true, status: true, uploaderId: true,
       quantity: true, libraryFileId: true, errorMessage: true,
+      spoolId: true, material: true, colorName: true, colorHex: true,
     },
   });
   if (!story || story.status !== "Requested" || story.libraryFileId) return;
@@ -191,15 +261,35 @@ export async function processIntake(storyId: number): Promise<void> {
   if (claimed.count === 0) return;
 
   let handoff: PipelineRun;
+  let libraryFileId: number;
+  let profileFellBack = false;
   try {
     const resolved = await resolveMakerWorldUrl(story.modelUrl);
 
     let imported;
     try {
-      imported = await importMakerWorldModel({
-        model_id: resolved.model_id,
-        profile_id: resolved.profile_id,
-      });
+      try {
+        imported = await importMakerWorldModel({
+          model_id: resolved.model_id,
+          profile_id: resolved.profile_id,
+        });
+      } catch (error) {
+        // The link named a print profile (a `?…`/`#profileId-…` part) that
+        // Bambu won't serve. Confirmed live: a share link's profile answered
+        // 502 "Bambu Lab API unexpected status 400 for profile …", while the
+        // same model with no profile imported fine. Fall back to the model's
+        // default profile once, and tell the requester below. A 401 is Bambu
+        // Cloud, which no retry fixes, so it goes straight through.
+        if (
+          resolved.profile_id == null ||
+          !(error instanceof BambuddyError) ||
+          error.status === 401
+        ) {
+          throw error;
+        }
+        imported = await importMakerWorldModel({ model_id: resolved.model_id });
+        profileFellBack = true;
+      }
     } catch (error) {
       // Confirmed live: a missing/expired Bambu Cloud link answers exactly
       // this 401, even for a model already in the library — see
@@ -250,6 +340,7 @@ export async function processIntake(storyId: number): Promise<void> {
       return;
     }
     handoff = run;
+    libraryFileId = imported.library_file_id;
   } catch (error) {
     const message =
       error instanceof BambuddyCloudExpiredError || error instanceof IntakeProblem
@@ -263,11 +354,32 @@ export async function processIntake(storyId: number): Promise<void> {
       await record({
         action: "story.intake_failed",
         subject: storyRef(story.id),
-        detail: { title: story.title, error: error instanceof Error ? error.message : String(error) },
+        detail: {
+          title: story.title,
+          error: error instanceof Error ? error.message : String(error),
+          // What Bambuddy said, not just its status code: a bare "502" from
+          // an import doesn't say whether MakerWorld refused the download or
+          // Bambuddy couldn't reach it. Admin-only, so it's kept whole-ish.
+          ...(error instanceof BambuddyError && error.body !== undefined && {
+            bambuddy: JSON.stringify(error.body).slice(0, 500),
+          }),
+        },
       });
     }
     return;
   }
+
+  if (profileFellBack) {
+    await notify({
+      recipientId: story.uploaderId,
+      storyId: story.id,
+      text:
+        `“${story.title}”: the print profile in your link couldn't be downloaded, ` +
+        "so the model's default profile is being used instead.",
+    });
+  }
+
+  await recordFilaments(story, libraryFileId);
 
   // Past the handoff: poll tightly to secure the queue entry early. A
   // failure here is not an intake failure — `syncStory` secures and advances

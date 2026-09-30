@@ -7,6 +7,18 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Added
 
+- **Multi-colour models.** Intake now reads which colours a model's plate
+  uses (Bambuddy's `filament-requirements`, right after import) and records
+  them on the ticket. The colour picked on the order form goes on the part
+  using the most filament; a model with more colours asks the requester to
+  pick the rest on the ticket, from what is on the shelf, or leave them as
+  the printer owner's choice. Colours can change until the print starts,
+  since every request is sliced as PLA and colour only matters when the
+  owner maps slots to the AMS in Bambuddy. The queue's *Ready to print* list
+  shows that mapping. A model needing more colours than the AMS holds (4) is
+  flagged. Also `PUT /api/stories/{id}/colours`, and `colours` on every
+  ticket in the API. Single-colour models look exactly as before.
+
 - **`/admin/audit` is a dashboard now, not just a log.** The page was built on
   the argument that a screen somebody glances at beats alerts nobody tunes —
   which only holds if somebody actually looks, and a wall of rows is not
@@ -366,6 +378,14 @@ Notable changes. Every entry names a released version; deployments pin
   and orphan `v0.1.0` in exchange for tidiness.
 
 ### Fixed
+
+- **A share link's print profile no longer blocks a request.** MakerWorld
+  share links carry a `?…`/`#profileId-…` part naming a profile, and Bambu
+  can refuse to download that profile (seen live: a `502`, "unexpected
+  status 400 for profile …") while the model itself imports fine. Intake now
+  retries once with the model's default profile and tells the requester.
+- **The audit trail keeps Bambuddy's reason for an intake failure**, not just
+  the status code, and `/admin/audit` shows it (it showed only the title).
 
 - **The stack could not be pulled any more, and nothing said so.** MinIO
   stopped publishing its community image to Docker Hub and `minio/minio` now

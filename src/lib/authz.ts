@@ -97,6 +97,8 @@ export async function getStoryOr404(storyId: number, actor: Actor) {
     where: { AND: [{ id: storyId }, storyScope(actor)] },
     include: {
       uploader: { select: { id: true, name: true, initials: true } },
+      // Main part (most filament) first — see STORY_FIELDS in stories.ts.
+      filaments: { orderBy: [{ usedGrams: "desc" }, { slotId: "asc" }] },
       comments: {
         orderBy: { createdAt: "asc" },
         include: {

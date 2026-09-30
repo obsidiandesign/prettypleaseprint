@@ -36,6 +36,7 @@ export type AuditAction =
   | "upload.rejected"
   | "story.status_changed"
   | "story.intake_failed"
+  | "story.colours_changed"
   | "story.declined"
   | "story.withdrawn"
   | "story.requeued"

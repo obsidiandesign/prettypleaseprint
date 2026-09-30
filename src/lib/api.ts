@@ -187,6 +187,17 @@ export function storyResource(story: StoryRow, { tipJar }: { tipJar: boolean }) 
     },
     material: story.material,
     color: { name: story.colorName, hex: story.colorHex },
+    // One per colour the model uses, main part first. `spool` null means the
+    // printer owner picks at print time. Empty if intake couldn't read them.
+    colours: story.filaments.map((f) => ({
+      slot: f.slotId,
+      designColor: f.designColor,
+      grams: Math.round(f.usedGrams * 10) / 10,
+      spool:
+        f.spoolId === null
+          ? null
+          : { id: f.spoolId, material: f.material, name: f.colorName, hex: f.colorHex },
+    })),
     tip: tipJar ? story.tip : "",
     note: story.note,
     errorMessage: story.errorMessage,

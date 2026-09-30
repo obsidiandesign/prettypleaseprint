@@ -140,6 +140,10 @@ export function UploadForm({
         <legend className="mb-[8.8px] font-mono text-[12px] font-bold uppercase tracking-[0.1em] text-ink-2">
           Colour — what&rsquo;s actually on the shelf
         </legend>
+        <p className="m-0 mb-[10px] text-[13.5px] leading-[1.45] text-ink-3">
+          For the main part. If the model has more colours, you&rsquo;ll pick
+          those on the ticket once it&rsquo;s been read.
+        </p>
         {spools.length === 0 ? (
           <p className="m-0 rounded-card border-[3px] border-dashed border-ink-3 bg-cream-2 px-[15px] py-[12px] text-[14px] text-ink-2">
             Nothing in stock right now — check back once {owner} restocks.

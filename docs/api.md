@@ -61,6 +61,7 @@ no header that names a user.
 | `POST` | `/api/stories` | Open a request from a MakerWorld link. JSON. |
 | `GET` | `/api/stories/{id}` | One ticket. |
 | `DELETE` | `/api/stories/{id}` | Withdraw your own request. |
+| `PUT` | `/api/stories/{id}/colours` | Choose a multi-colour model's colours. |
 | `POST` | `/api/stories/{id}/decline` | Say no. *Printer owner.* |
 | `POST` | `/api/stories/{id}/flag` | Flag a model problem, with a reason. *Printer owner.* |
 | `DELETE` | `/api/stories/{id}/flag` | Clear the flag. *Printer owner.* |
@@ -138,6 +139,16 @@ While the jar is off it is ignored, and every ticket's `tip` comes back as
 
 There is no endpoint that lists spools yet, so a script has to know the
 Bambuddy spool id it wants; the upload form is where the live list is shown.
+
+**Multi-colour models.** Once intake has imported the model, the ticket's
+`colours` lists every colour the plate uses, main part (most filament) first:
+the model's own `slot` number, the designer's `designColor` (a hint), `grams`,
+and the `spool` that will print it, or `null` for the printer owner's choice.
+The `spoolId` from the create request goes on the main slot. To choose the
+rest, `PUT /api/stories/{id}/colours` with `{"slots": [{"slotId": 5,
+"spoolId": 12}]}`; spools are checked exactly as on create, the main slot
+can't be set to `null`, and it only works until the print starts (`409`
+after). `colours` is empty when intake couldn't read the model.
 
 A ticket on the wire stops at `status` and `errorMessage`: the Bambuddy library
 file, pipeline run and queue entry behind it are sync plumbing and never leave

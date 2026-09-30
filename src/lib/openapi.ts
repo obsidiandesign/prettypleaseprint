@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { auth } from "@/lib/auth";
 import { ALL_STATUSES } from "@/lib/scope";
-import { BodySchema, CreateStorySchema, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, ReasonSchema } from "@/lib/stories";
+import { BodySchema, ColoursSchema, CreateStorySchema, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, ReasonSchema } from "@/lib/stories";
 import { NOTIFICATION_LIMIT_MAX } from "@/lib/notifications";
 
 /**
@@ -120,6 +120,31 @@ const STORY_SCHEMA = {
       properties: {
         name: { type: "string", examples: ["Glow in Dark (Green)"] },
         hex: { type: ["string", "null"], examples: ["EBF1E0FF"] },
+      },
+    },
+    colours: {
+      type: "array",
+      description:
+        "One entry per colour the model uses, read from the model at intake, " +
+        "main part (most filament) first; the main entry carries `color`. " +
+        "`spool` null means the printer owner picks at print time. Empty when " +
+        "intake couldn't read the model's colours.",
+      items: {
+        type: "object",
+        properties: {
+          slot: { type: "integer", description: "The model's own slot number. Arbitrary; can exceed 4." },
+          designColor: { type: ["string", "null"], description: "The designer's colour, `#RRGGBB`. A hint.", examples: ["#000000"] },
+          grams: { type: "number", examples: [220.4] },
+          spool: {
+            type: ["object", "null"],
+            properties: {
+              id: { type: "integer" },
+              material: { type: ["string", "null"] },
+              name: { type: ["string", "null"] },
+              hex: { type: ["string", "null"] },
+            },
+          },
+        },
       },
     },
     tip: {
@@ -335,6 +360,7 @@ export async function buildOpenApiDocument() {
         // Derived from the Zod schemas the handlers actually validate with.
         CreateStory: jsonSchema(CreateStorySchema),
         FlagReason: jsonSchema(z.object({ reason: ReasonSchema })),
+        Colours: jsonSchema(ColoursSchema),
         CommentBody: jsonSchema(z.object({ body: BodySchema })),
         ...authHalf.schemas,
       },
@@ -580,6 +606,40 @@ export async function buildOpenApiDocument() {
             "403": errorResponse("Not the printer owner, or past the point where declining is honest."),
             "404": errorResponse("No such ticket."),
             "409": errorResponse("Being handed to Bambuddy right now. Re-read the ticket: once intake lands it in Slicing, declining no longer applies (403); only if intake failed and left it Requested can you decline it."),
+            ...COMMON_ERRORS,
+          },
+        },
+      },
+
+      "/api/stories/{id}/colours": {
+        put: {
+          tags: ["stories"],
+          summary: "Choose a multi-colour model's colours",
+          description:
+            "A spool per slot from `colours`, or `null` for the printer's " +
+            "choice. Slots left out stay as they are. Spools are checked " +
+            "against Bambuddy's live inventory and must be PLA. The main slot " +
+            "(the first in `colours`) must keep a spool. The requester's, or " +
+            "the printer owner's, while the ticket is Requested, Slicing or " +
+            "Ready: colour doesn't affect slicing, so it can change until the " +
+            "print starts.",
+          parameters: [storyIdParam],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Colours" },
+                example: { slots: [{ slotId: 3, spoolId: 12 }, { slotId: 5, spoolId: null }] },
+              },
+            },
+          },
+          responses: {
+            "200": storyResponse("Saved. The printer owner is told if someone else changed them."),
+            "400": errorResponse("A slot this model doesn't have, a non-PLA spool, or no spool for the main slot."),
+            "403": errorResponse("Not the requester or the printer owner."),
+            "404": errorResponse("No such ticket, or not one you may see."),
+            "409": errorResponse("The print has started (colours are settled), or a spool has gone from the shelf."),
+            "503": errorResponse("Bambuddy's inventory couldn't be reached. Retry later."),
             ...COMMON_ERRORS,
           },
         },

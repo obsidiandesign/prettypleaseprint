@@ -168,6 +168,32 @@ export async function importMakerWorldModel(params: {
   );
 }
 
+/**
+ * One filament slot of a library file, from `filament-requirements`.
+ *
+ * Confirmed against a live instance: without `full_slots`, only the slots
+ * the plate actually uses come back — a model whose project defines six
+ * slots but prints in one returns one. That is the right count for "how many
+ * colours does this need". `slot_id` is the project's own numbering (1-based,
+ * and a single-colour model's only slot was 3), and `type`/`color` are the
+ * designer's, which this deployment treats as hints: every request is
+ * sliced as PLA.
+ */
+export type FilamentRequirement = {
+  slot_id: number;
+  type: string | null;
+  color: string | null;
+  used_grams: number;
+  used_in_plate?: boolean;
+};
+
+export async function getFilamentRequirements(libraryFileId: number): Promise<FilamentRequirement[]> {
+  const { filaments } = await bambuddyFetch<{ filaments: FilamentRequirement[] }>(
+    `/api/v1/library/files/${libraryFileId}/filament-requirements`,
+  );
+  return filaments.filter((f) => f.used_in_plate !== false);
+}
+
 // ---------------------------------------------------------------------------
 // Slicing — Slicer Pipelines
 // ---------------------------------------------------------------------------

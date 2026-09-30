@@ -35,7 +35,10 @@ export default async function QueuePage({
 
   const stories = await db.story.findMany({
     orderBy: { createdAt: "asc" },
-    include: { uploader: { select: { name: true, initials: true } } },
+    include: {
+      uploader: { select: { name: true, initials: true } },
+      filaments: { orderBy: [{ usedGrams: "desc" }, { slotId: "asc" }] },
+    },
   });
 
   const needsAttention = stories.filter(
@@ -133,6 +136,24 @@ export default async function QueuePage({
                   <span className="font-mono text-[11.5px] uppercase tracking-[0.05em] text-ink-3">
                     {quantityText(story.quantity)} · {story.material} · {story.uploader.name}
                   </span>
+                  {/* Multi-colour: what each of the model's colours prints
+                      in, to match in Bambuddy's AMS mapping when starting it. */}
+                  {story.filaments.length > 1 && (
+                    <ul className="m-0 flex w-full list-none flex-wrap gap-x-[17.6px] gap-y-[4px] pl-[41px] font-mono text-[11.5px] text-ink-2">
+                      {story.filaments.map((f) => (
+                        <li key={f.slotId} className="flex items-center gap-[6px]">
+                          <span
+                            role="img"
+                            aria-label={`designer's ${f.designColor ?? "colour"}`}
+                            className="h-[12px] w-[12px] rounded-full border-2 border-ink"
+                            style={{ background: f.designColor ?? "#b6bcc2" }}
+                          />
+                          slot {f.slotId}, {Math.round(f.usedGrams)} g →{" "}
+                          {f.spoolId === null ? "your choice" : f.colorName}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               ))}
             </div>

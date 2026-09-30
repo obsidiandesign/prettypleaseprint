@@ -39,6 +39,21 @@ export function storyScope(actor: Actor): Prisma.StoryWhereInput {
 export const storyRef = (id: number) => `PPP-${100 + id}`;
 
 /**
+ * How many colours the printer can feed in one print: the AMS's slots, which
+ * is also how many filament presets the Slicer Pipeline carries (one per AMS
+ * slot). A model needing more is flagged to the owner rather than refused; it
+ * may still print with manual swaps, and that is their call.
+ */
+export const AMS_SLOTS = 4;
+
+/**
+ * While the requester can still change a ticket's colours: up to the moment
+ * the print starts. Every request is sliced as PLA, so colour never affects
+ * slicing; it only matters when the owner maps slots to the AMS in Bambuddy.
+ */
+export const COLOUR_EDITABLE: readonly StoryStatus[] = ["Requested", "Slicing", "Ready"];
+
+/**
  * The columns the board draws, in the order a request actually moves through
  * them. Unlike the old flow, nothing here is "the only order it may move
  * in" — a story's status is derived from Bambuddy's state on every sync

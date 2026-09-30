@@ -317,11 +317,42 @@ model Story {
 
   comments      Comment[]
   notifications Notification[]
+  filaments     StoryFilament[]
 
   @@index([uploaderId])
   @@index([status])
   @@index([queueItemId])
   @@map("story")
+}
+
+/// One colour the model uses, read from Bambuddy's `filament-requirements`
+/// at intake (src/lib/bambuddy-sync.ts). A single-colour model has one row,
+/// holding the spool picked on the order form; a multi-colour model has one
+/// per slot the plate actually uses, and the requester picks the rest on the
+/// ticket. No rows means intake couldn't read the model, and the ticket shows
+/// only the form's colour, as before this existed.
+model StoryFilament {
+  id      Int   @id @default(autoincrement())
+  storyId Int
+  story   Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  /// The model's own slot number, 1-based. Arbitrary, and can exceed the
+  /// AMS's four slots even when the model uses four colours or fewer.
+  slotId      Int
+  /// The designer's colour for this slot, `#RRGGBB`. A hint, never a pick.
+  designColor String?
+  usedGrams   Float
+
+  // The pick, snapshotted from Bambuddy's inventory like Story's own colour
+  // fields. `spoolId` null means "printer's choice": the owner matches the
+  // designer's colour when starting the print.
+  spoolId   Int?
+  material  String?
+  colorName String?
+  colorHex  String?
+
+  @@unique([storyId, slotId])
+  @@map("storyFilament")
 }
 
 model Comment {

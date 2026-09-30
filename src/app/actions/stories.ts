@@ -11,6 +11,7 @@ import {
   declineStory as decline,
   flagStory as flag,
   requeueStory as requeue,
+  setStoryColours as setColours,
   storyIdOr400,
   withdrawStory as withdraw,
 } from "@/lib/stories";
@@ -165,6 +166,29 @@ export async function requeueStory(formData: FormData): Promise<void> {
   try {
     const done = await requeue(user, id);
     back(`/story/${done.id}`, { toast: `Re-queued ${done.fromRef} as ${done.ref}` });
+  } catch (error) {
+    if (error instanceof StoryProblem) back(`/story/${id}`, { toast: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Save a multi-colour model's colours from the ticket. One `slot-<id>` field
+ * per colour slot, holding a spool id, or "" for the printer's choice.
+ *
+ * A refusal comes back as a toast, not `?error=`: the ticket only renders
+ * `error` inside the owner's panel, and the requester is usually the one
+ * saving. Same as withdraw and re-queue.
+ */
+export async function setStoryColours(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const id = storyIdOr400(formData.get("storyId"));
+  const slots = [...formData.entries()]
+    .filter(([key]) => key.startsWith("slot-"))
+    .map(([key, value]) => ({ slotId: key.slice("slot-".length), spoolId: value === "" ? null : value }));
+  try {
+    const done = await setColours(user, id, { slots });
+    back(`/story/${id}`, { toast: `Colours saved for ${done.ref}.` });
   } catch (error) {
     if (error instanceof StoryProblem) back(`/story/${id}`, { toast: error.message });
     throw error;

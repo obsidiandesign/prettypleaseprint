@@ -51,10 +51,13 @@ A tip, if the owner has the tip jar switched on — see
 request:
 
 1. **resolve** the link (title, model id) and **import** the model into
-   Bambuddy's library → `libraryFileId`
+   Bambuddy's library → `libraryFileId`. If the link names a print profile
+   Bambu won't serve (share links carry one), it retries once with the
+   model's default profile and tells the requester.
 2. **start a pipeline run** on the one PLA pipeline, with the requested copies
    → `pipelineRunId`, and the ticket is `Slicing`
-3. **poll the run for ~40 s**, securing any queue entry it creates (below), and
+3. **read the model's colours** (see [Multi-colour models](#multi-colour-models))
+4. **poll the run for ~40 s**, securing any queue entry it creates (below), and
    tell the requester where the ticket landed
 
 The two ids and `Slicing` are saved the moment the run exists. A crash after
@@ -72,6 +75,33 @@ A claim (`intakeStartedAt`, a 10-minute lease) keeps the synchronous call and a
 cron tick from both importing the same story. Decline and withdraw respect the
 same claim, so they answer `409` for the few seconds intake holds a story
 rather than being overwritten mid-handoff or orphaning what it created.
+
+### Multi-colour models
+
+Right after the handoff, intake asks Bambuddy which filament slots the
+model's plate actually uses (`filament-requirements`, which reads the 3MF) and
+records one `StoryFilament` row per slot: the model's slot number, the
+designer's colour, grams, and the spool it will print in. Slot numbers are
+the designer's and arbitrary (a single-colour model's only slot was 3 in the
+first one tried), so the order form's colour goes on the slot using the most
+filament, the main part in practice. The others start as the printer owner's
+choice.
+
+A model with more than one colour notifies the requester, and the ticket
+grows a *Colours* panel to pick a spool per slot. Colour can change until the
+print starts (`COLOUR_EDITABLE`), because every request is sliced as PLA:
+colour never changes the slicing, only which AMS slot feeds which part when
+the owner starts the print in Bambuddy. The queue's *Ready to print* list
+shows that mapping so the owner can apply it. More colours than the AMS holds
+(`AMS_SLOTS`, 4) is flagged to the owner rather than refused.
+
+Reading the colours is best-effort. If it fails, the ticket has no slots and
+shows the form's colour, exactly as before this existed. A re-queued ticket
+copies its slots and picks, and intake keeps them rather than re-reading.
+
+Deliberately not done: writing the AMS mapping onto the queue entry
+automatically. It only works when the chosen spools are loaded, and a wrong
+mapping prints the wrong colours; the owner reviews every print anyway.
 
 ### The one thing that must not be late: manual start
 

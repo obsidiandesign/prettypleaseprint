@@ -199,7 +199,9 @@ export default async function AuditPage({
 
 /** The few fields worth showing inline; the rest stay in the database. */
 function Detail({ detail }: { detail: Record<string, unknown> }) {
-  const interesting = ["reason", "title", "filename", "format", "dims", "role"];
+  // `error` is the one that matters most when something's wrong: an intake
+  // failure's real cause, which the ticket itself only summarises.
+  const interesting = ["title", "reason", "error", "bambuddy", "from", "to", "role"];
   const shown = interesting
     .filter((k) => detail[k] != null)
     .map((k) => `${k}: ${String(detail[k])}`);
