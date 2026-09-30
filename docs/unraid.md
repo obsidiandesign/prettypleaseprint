@@ -57,9 +57,40 @@ The app joins SWAG's Docker network and publishes no port of its own, so SWAG
 is the only way in. The files assume that network is called `proxynet`; if
 yours is something else, set `PPP_PROXY_NETWORK` in the ENV file.
 
+To see which network SWAG is on:
+
+```bash
+docker inspect swag --format '{{range $name, $net := .NetworkSettings.Networks}}{{$name}}  {{$net.IPAddress}}{{"\n"}}{{end}}'
+```
+
+A custom network (`proxynet` or similar) is what you want. If SWAG is on
+`br0` (its own LAN address) or on Docker's default `bridge`, container names
+don't resolve there, so give SWAG a second network and keep its LAN address:
+
+```bash
+docker network create proxynet
+docker network connect proxynet swag
+```
+
+**Make that attachment survive SWAG updates.** Unraid recreates a container
+when it updates it, and by default drops any network it was connected to by
+hand. In **Settings → Docker** (Advanced View), set **Enable Docker** to No,
+set **Preserve user defined networks** to Yes, then enable Docker again. As a
+backstop, a User Scripts entry run **At Startup of Array** can put it back:
+
+```bash
+#!/bin/bash
+docker network inspect proxynet >/dev/null 2>&1 || docker network create proxynet
+docker inspect -f '{{json .NetworkSettings.Networks}}' swag | grep -q '"proxynet"' \
+  || docker network connect proxynet swag
+```
+
 1. Copy `pretty-please-print.subdomain.conf` to
    `/mnt/user/appdata/swag/nginx/proxy-confs/`, and change `server_name
-   print.*` to your subdomain.
+   print.*` to your subdomain. A stock SWAG loads every `*.subdomain.conf`
+   there by itself. If yours is set up to load only what is linked into a
+   `site-confs` (or `sites-enabled`) folder, link it there too, the same way
+   as your other sites.
 2. Make sure SWAG's certificate covers that subdomain: add it to SWAG's
    `SUBDOMAINS` variable, unless you use a wildcard certificate.
 3. Point the subdomain's DNS at your server as you have for your other SWAG
@@ -149,6 +180,12 @@ covers restoring either kind.
 
 ## When something's wrong
 
+**A plain `404 Not Found` page with `nginx` under it.** SWAG isn't using the
+conf: the hostname doesn't match its `server_name`, the file doesn't end in
+`.subdomain.conf`, or your SWAG only loads linked confs (see step 2.1).
+`tail /mnt/user/appdata/swag/log/nginx/access.log` shows the hostname and path
+each request arrived with.
+
 **`502` from SWAG.** Check the app is on SWAG's network, and that the name
 resolves from SWAG:
 
@@ -156,6 +193,12 @@ resolves from SWAG:
 docker network inspect proxynet --format '{{range .Containers}}{{.Name}} {{end}}'
 docker exec swag curl -sS -m 5 http://ppp-app:3000/api/health
 ```
+
+If both look right, SWAG's own log says why:
+`tail /mnt/user/appdata/swag/log/nginx/error.log`. `could not be resolved`
+means SWAG's nginx still has the DNS server from before it joined the network;
+`docker restart swag`. If SWAG worked and then lost the network after an
+update, see "Make that attachment survive SWAG updates" in step 2.
 
 **The app won't start, and has no logs.** Look at the migrator, which is the
 container that's meant to exit: `docker logs ppp-migrate`. A wrong
