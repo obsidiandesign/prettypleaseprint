@@ -50,7 +50,7 @@
     "@prisma/client": "6.19.3",
     "better-auth": "1.7.1",
     "next": "15.5.25",
-    "nodemailer": "9.1.1",
+    "nodemailer": "10.0.12",
     "react": "19.0.8",
     "react-dom": "19.0.8",
     "resend": "6.22.0",

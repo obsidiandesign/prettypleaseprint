@@ -379,6 +379,11 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Fixed
 
+- **nodemailer 9.1.1 → 10.0.12** for GHSA-v53p-9fqp-m79j (HIGH, published
+  2026-09-29): quadratic backtracking in address parsing, a remote denial of
+  service. Only reachable when mail is configured (`SMTP_URL`). 10.0's one
+  breaking change is requiring Node 20+; the images run 22.
+
 - **A share link's print profile no longer blocks a request.** MakerWorld
   share links carry a `?…`/`#profileId-…` part naming a profile, and Bambu
   can refuse to download that profile (seen live: a `502`, "unexpected
