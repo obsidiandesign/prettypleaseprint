@@ -53,8 +53,13 @@ services:
       # Gives the container a WebUI link in Unraid's Docker tab.
       net.unraid.docker.webui: ${APP_URL}
     networks:
-      - default
-      - proxy
+      default:
+      proxy:
+      # Bambuddy on its own VLAN (a br0.50-style custom network)? Uncomment this
+      # and the `bambuddy` network at the bottom. See "Bambuddy on another VLAN"
+      # in docs/unraid.md for why, and how to pick the address.
+      # bambuddy:
+      #   ipv4_address: ${PPP_BAMBUDDY_NET_IP:?set PPP_BAMBUDDY_NET_IP}
     depends_on:
       db:
         condition: service_healthy
@@ -88,3 +93,6 @@ networks:
   proxy:
     external: true
     name: ${PPP_PROXY_NETWORK:-proxynet}
+  # bambuddy:
+  #   external: true
+  #   name: ${PPP_BAMBUDDY_NETWORK:-br0.50}

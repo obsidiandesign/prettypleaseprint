@@ -141,6 +141,62 @@ polling. In **Settings → User Scripts**:
 The script runs the call from inside the app container, so `CRON_SECRET`
 never leaves the ENV file and the sync route can stay blocked at SWAG.
 
+## Bambuddy on another VLAN
+
+If Bambuddy runs on its own VLAN network (a custom network like `br0.50`), the
+app may not be able to reach it even when the Unraid host can. The sign is the
+order page: it takes a long time, then says it couldn't reach Bambuddy's
+colour list. To confirm:
+
+```bash
+# the host
+curl -sS -m 5 -o /dev/null -w 'host: HTTP %{http_code}\n' http://10.0.50.216:8000/
+# the app
+docker exec ppp-app node -e "fetch('http://10.0.50.216:8000/',{signal:AbortSignal.timeout(5000)}).then(r=>console.log('app: HTTP',r.status)).catch(e=>console.log('app: FAILED',e.cause?.code??e.name))"
+```
+
+The host answering `HTTP 200` while the app times out means the host reaches
+the VLAN by a route that containers on Docker's own networks don't get,
+typically because Unraid has no address of its own on that VLAN (`ip -4 addr
+show br0.50` prints nothing). **Host access to custom networks** doesn't cover
+this. If both fail, it's routing or a firewall between your VLANs instead, and
+the fix is on the router.
+
+The fix is to put the app on the VLAN too, next to Bambuddy:
+
+1. **Pick a free address on the VLAN for the app**, outside your router's DHCP
+   range and not used by anything else. This shows the network's subnet and
+   the range Docker hands out from:
+
+   ```bash
+   docker network inspect br0.50 --format '{{json .IPAM.Config}}'
+   ```
+
+2. In the ENV file, set `PPP_BAMBUDDY_NETWORK` (e.g. `br0.50`) and
+   `PPP_BAMBUDDY_NET_IP` (the address you picked).
+3. In the compose file, uncomment the two `bambuddy` blocks: one under the
+   app's `networks:`, one at the bottom.
+4. **Compose Down**, then **Compose Up**, and run the app test above again.
+
+Then check the app can still reach the internet, which the password breach
+check needs. With two networks, Docker may route the app's outbound traffic
+through the VLAN's gateway, and an isolated VLAN may not allow that:
+
+```bash
+docker exec ppp-app node -e "fetch('https://api.pwnedpasswords.com/range/00000',{signal:AbortSignal.timeout(5000)}).then(r=>console.log('internet: HTTP',r.status)).catch(e=>console.log('internet: FAILED',e.cause?.code??e.name))"
+```
+
+`HTTP 200` is what you want. If it fails, allow the app's VLAN address out to
+the internet on your router. On Docker 28 or newer there is also a compose
+option, `gw_priority`, to keep the default route on the app's own network
+instead.
+
+One side effect to know about: the app now also has an address on that VLAN,
+so devices there can reach it on port 3000 without going through SWAG. They
+get plain HTTP, and since the session cookie is marked `Secure`, nobody can
+stay signed in that way. It is still a second way in, so if that VLAN holds
+untrusted devices, block port 3000 to the app's VLAN address on your router.
+
 ## Updating and rolling back
 
 Every push to `main` publishes new images. To move to one:
@@ -216,6 +272,10 @@ ownership to the container's `postgres` user (uid 70):
 ```bash
 chown -R 70:70 /mnt/cache/appdata/pretty-please-print/db
 ```
+
+**The order page takes ages, then says it couldn't reach Bambuddy.** The
+app can't reach `BAMBUDDY_URL`. If Bambuddy is on its own VLAN, see
+[Bambuddy on another VLAN](#bambuddy-on-another-vlan).
 
 **Tickets stay `Requested`, or stop moving.** Run the sync script by hand and
 read what it prints. `401` means `CRON_SECRET` is unset in the ENV file. For
