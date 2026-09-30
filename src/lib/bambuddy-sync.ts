@@ -127,8 +127,15 @@ const UNQUEUED_GRACE_MS = 2 * 60 * 1000;
  * forever and nobody is told.
  */
 function unqueuedReason(run: PipelineRun): string | null {
-  if (run.status !== "completed") return null;
   if (run.jobs.some((job) => job.queue_entry_id != null)) return null;
+
+  // Confirmed live: a slice that failed left its run `in_progress`, with the
+  // failure in `error_message` and `completed_at` set, every job still
+  // `pending` — and Bambuddy's own cancel answered 200 without moving it. A
+  // run that has finished with an error is final, whatever `status` says.
+  if (run.error_message && run.completed_at) return run.error_message;
+
+  if (run.status !== "completed") return null;
   // A missing or unparseable completed_at counts as past the grace: waiting
   // on a time that never comes would leave the story in Slicing for good.
   const completedAt = run.completed_at ? Date.parse(run.completed_at) : NaN;
@@ -401,12 +408,23 @@ export async function processIntake(storyId: number): Promise<void> {
         }, "Requested");
         return;
       }
-      if (RUN_SETTLED.has(run.status)) break;
+      if (RUN_SETTLED.has(run.status) || unqueuedReason(run)) break;
 
       await sleep(2000);
       const refreshed = await getPipelineRun(run.id);
       if (!refreshed) break;
       run = refreshed;
+    }
+
+    const unqueued = unqueuedReason(run);
+    if (unqueued) {
+      await applyStatusChange(asSlicing, "Failed", {
+        slicedLibraryFileId: run.sliced_library_file_id,
+        errorMessage: unqueued,
+        intakeStartedAt: null,
+      }, "Requested");
+      await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — needs attention: ${unqueued}`, story.id);
+      return;
     }
 
     const to = deriveStatus({ pipelineRunStatus: run.status });

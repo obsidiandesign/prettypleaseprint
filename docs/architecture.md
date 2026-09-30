@@ -136,7 +136,17 @@ Every status but `Declined` comes from Bambuddy through `deriveStatus` in
 A run that completes but never produces a queue entry would otherwise read as
 `Slicing` forever. After a two-minute grace it becomes `Failed`, with the job's
 error if there is one, or a pointer at the pipeline's dispatch settings, and
-the admin is notified. A pending entry's `waiting_reason` (why Bambuddy has not
+the admin is notified.
+
+A run can also finish with an error and never say so. Seen live: a slice that
+failed at "Generating G-code" left its run `in_progress`, with the failure in
+`error_message`, `completed_at` set and every copy still `pending`, and
+Bambuddy's own cancel answered `200` without changing it. So a run with an
+`error_message` and a `completed_at` but no queue entries counts as `Failed`,
+with that message, whatever its `status` says. Intake checks this during its
+own poll too, so a slice that fails in the first seconds is reported at once.
+
+A pending entry's `waiting_reason` (why Bambuddy has not
 started it) is surfaced as the ticket's message too, because a `Ready` ticket
 that is quietly stuck needs the owner's eyes.
 

@@ -379,6 +379,13 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Fixed
 
+- **A failed slice now fails the ticket.** Bambuddy can leave a run whose
+  slice failed as `in_progress` indefinitely (error message and completion
+  time set, every copy still pending, and its cancel doesn't move it), which
+  kept the ticket in *Slicing* for good. A run that has finished with an
+  error and never queued anything is now `Failed`, with the slicer's message,
+  whatever its status says.
+
 - **nodemailer 9.1.1 → 10.0.12** for GHSA-v53p-9fqp-m79j (HIGH, published
   2026-09-29): quadratic backtracking in address parsing, a remote denial of
   service. Only reachable when mail is configured (`SMTP_URL`). 10.0's one
