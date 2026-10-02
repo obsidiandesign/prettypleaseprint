@@ -11,10 +11,10 @@
  * chunk graph without every chunk needing its own nonce. Browsers that honour
  * it ignore the host allowlist; older ones fall back to 'self'.
  *
- * `style-src` does NOT need 'unsafe-inline'. next/font self-hosts its
- * webfonts into /_next/static at build time, so the rendered page contains no
- * inline <style> block and no request to fonts.googleapis.com — verified
- * against the built output. What the page does contain is a couple of inline
+ * `style-src` does NOT need 'unsafe-inline'. The webfonts are committed
+ * (src/app/fonts.css) and bundled into /_next/static at build time, so the
+ * rendered page contains no inline <style> block and no request to
+ * fonts.googleapis.com. What the page does contain is a couple of inline
  * `style=` attributes from component code, and those are governed separately
  * by `style-src-attr`. Splitting the two keeps the broad allowance off the
  * directive that can pull in a whole stylesheet.

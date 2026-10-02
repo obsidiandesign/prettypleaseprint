@@ -396,6 +396,13 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Fixed
 
+- **Image builds no longer depend on Google Fonts.** `next/font/google`
+  downloaded the four faces at every build, and Google sometimes answered
+  GitHub's runners with something that wasn't font CSS, failing the release
+  in `next/font` ("Cannot read properties of null"). The same 15 files and
+  rules are now committed (`src/app/fonts.css`, `src/app/fonts/`, with each
+  font's SIL Open Font License). Pages render identically.
+
 - **Activity entries can be selected and copied.** Each was a `<button>`,
   and browsers won't select text inside one, so an error message could only
   be dragged out. They're now selectable; a click that ends a selection
