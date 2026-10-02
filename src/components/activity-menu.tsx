@@ -89,44 +89,60 @@ export function ActivityMenu({
                 Nothing yet.
               </p>
             )}
-            {items.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => {
-                  if (!item.read) startTransition(() => void markRead(item.id));
-                  // Take them to whatever the notification is about. A feature
-                  // request goes to /frr, a print to /story; a reference-less
-                  // one (a withdrawal) just marks read.
-                  const href =
-                    item.featureId !== null
-                      ? `/frr/${item.featureId}`
-                      : item.storyId !== null
-                        ? `/story/${item.storyId}`
-                        : null;
-                  if (href) window.location.assign(href);
-                }}
-                className={`flex cursor-pointer gap-[13.2px] rounded-card border-2 border-transparent px-[13.2px] py-[11px] text-left hover:border-ink hover:bg-cream-2 ${
-                  item.read ? "bg-transparent" : "bg-sun-wash"
-                }`}
-              >
-                <span
-                  aria-hidden
-                  className={`mt-[6px] h-[8px] w-[8px] flex-none rounded-full ${
-                    item.read ? "bg-chrome" : "bg-cherry"
+            {items.map((item) => {
+              // Take them to whatever the notification is about. A feature
+              // request goes to /frr, a print to /story; a reference-less
+              // one (a withdrawal) just marks read.
+              const href =
+                item.featureId !== null
+                  ? `/frr/${item.featureId}`
+                  : item.storyId !== null
+                    ? `/story/${item.storyId}`
+                    : null;
+              const open = () => {
+                if (!item.read) startTransition(() => void markRead(item.id));
+                if (href) window.location.assign(href);
+              };
+              return (
+                // Not a <button>: browsers won't let you select text inside
+                // one, and these carry error messages worth copying. A click
+                // that ends a text selection is a copy, not a navigation.
+                <div
+                  key={item.id}
+                  role="link"
+                  tabIndex={0}
+                  onClick={() => {
+                    if (window.getSelection()?.toString()) return;
+                    open();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      open();
+                    }
+                  }}
+                  className={`flex cursor-pointer select-text gap-[13.2px] rounded-card border-2 border-transparent px-[13.2px] py-[11px] text-left hover:border-ink hover:bg-cream-2 focus-visible:border-ink ${
+                    item.read ? "bg-transparent" : "bg-sun-wash"
                   }`}
-                />
-                <span>
-                  <span className="block text-[14px] leading-[1.35]">
-                    {item.text}
+                >
+                  <span
+                    aria-hidden
+                    className={`mt-[6px] h-[8px] w-[8px] flex-none rounded-full ${
+                      item.read ? "bg-chrome" : "bg-cherry"
+                    }`}
+                  />
+                  <span>
+                    <span className="block text-[14px] leading-[1.35]">
+                      {item.text}
+                    </span>
+                    <span className="mt-[2px] block font-mono text-[11px] text-ink-3">
+                      {item.when}
+                      {item.read ? "" : " · unread"}
+                    </span>
                   </span>
-                  <span className="mt-[2px] block font-mono text-[11px] text-ink-3">
-                    {item.when}
-                    {item.read ? "" : " · unread"}
-                  </span>
-                </span>
-              </button>
-            ))}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

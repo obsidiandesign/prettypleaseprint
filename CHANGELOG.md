@@ -396,6 +396,11 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Fixed
 
+- **Activity entries can be selected and copied.** Each was a `<button>`,
+  and browsers won't select text inside one, so an error message could only
+  be dragged out. They're now selectable; a click that ends a selection
+  doesn't navigate, and a plain click or Enter still opens the ticket.
+
 - **A failed slice now fails the ticket.** Bambuddy can leave a run whose
   slice failed as `in_progress` indefinitely (error message and completion
   time set, every copy still pending, and its cancel doesn't move it), which
