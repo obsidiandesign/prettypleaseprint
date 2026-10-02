@@ -283,5 +283,12 @@ read what it prints. `401` means `CRON_SECRET` is unset in the ENV file. For
 Bambuddy-side problems (Bambu Cloud sign-in, the pipeline), the ticket itself
 carries the reason, and the admin is notified.
 
+**"Slice failed: … Slicer process failed (signal SIGKILL)".** The slicer was
+killed for lack of memory on the machine running it, not a problem with the
+model. Bambu Studio commonly needs 1–3 GB to slice a multi-colour project; a
+Home Assistant VM with 2 GB killed every slice, even single plates, and 4 GB
+fixed it. Give that machine (or VM) more memory, then use **Print again** on
+the ticket.
+
 **Audit rows have no IP address.** That's `TRUST_PROXY_HEADERS=false`, which
 is correct behind SWAG; see the comment in the ENV file.

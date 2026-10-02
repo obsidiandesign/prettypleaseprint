@@ -224,7 +224,11 @@ On the Bambuddy side, once:
    your printer or printer model. Pipelines made per filament count for
    `BAMBUDDY_PIPELINES` before this aren't needed; if that's set, its first
    id is used as the template.
-3. **Bambu Cloud signed in.** MakerWorld downloads go through it. When that
+3. **Enough memory for the slicer.** Bambuddy slices through a Bambu Studio
+   sidecar, which commonly needs 1–3 GB for a multi-colour project. Short of
+   memory, the slicer is killed and the ticket fails with "Slicer process
+   failed (signal SIGKILL)". A 2 GB host killed every slice; 4 GB was fine.
+4. **Bambu Cloud signed in.** MakerWorld downloads go through it. When that
    sign-in expires, new requests wait in `Requested` with a message, the admin
    is told once, and they carry on by themselves once it is renewed.
 
