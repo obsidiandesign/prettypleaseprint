@@ -149,8 +149,7 @@ with commentary is [`.env.docker.example`](.env.docker.example).
 | `DB_PASSWORD` | **yes** | Postgres password. Baked into the data directory on first start — see [Restore](#restore). |
 | `BAMBUDDY_URL` | **yes** | Bambuddy's address on the LAN, e.g. `http://192.168.1.20:8000`. Never a public URL. |
 | `BAMBUDDY_API_KEY` | **yes** | A Bambuddy API key with **Manage Library + Manage Queue** only — no Control Printer — ideally on a dedicated service account. |
-| `BAMBUDDY_PIPELINES` | | The Slicer Pipelines to slice with, one per filament count (1–4 PLA presets), e.g. `"5,6,7,1"`. The app picks per model — see [Bambuddy and the sync](docs/deployment.md#bambuddy-and-the-sync). |
-| `BAMBUDDY_PIPELINE_ID` | **yes**, unless `BAMBUDDY_PIPELINES` | A single Slicer Pipeline, PLA. On its own, 2- and 3-colour models are flagged rather than sliced. |
+| `BAMBUDDY_PIPELINE_ID` | **yes** | The Slicer Pipeline used as a settings template (printer, process, bed, PLA filament, target printer). The app slices each request itself from it — see [Bambuddy and the sync](docs/deployment.md#bambuddy-and-the-sync). |
 | `CRON_SECRET` | **yes** | Bearer secret for `POST /api/cron/sync`. `openssl rand -base64 32`. Unset, the sync refuses every call. |
 | `APP_URL` | **yes** | The origin the browser sees, including scheme. Cookies, invitation links and the WebAuthn relying party derive from it. Must be `https://` in production. |
 | `PASSKEY_RP_ID` | **yes** | Registrable domain, no scheme or port. **Permanent** — changing it kills every enrolled passkey. |

@@ -47,11 +47,12 @@ export const storyRef = (id: number) => `PPP-${100 + id}`;
 export const AMS_SLOTS = 4;
 
 /**
- * Which Slicer Pipeline can slice a model, by filament count.
+ * How many filament presets to slice a model with: one per filament slot its
+ * project defines, or `fallback` (the template's own count) when that isn't
+ * known.
  *
- * A pipeline loads one filament preset per entry, and Bambu Studio's CLI
- * can't take more filaments than a multi-colour project defines. Confirmed
- * live, slicing through Bambuddy:
+ * Bambu Studio's CLI can't take more filaments than a multi-colour project
+ * defines. Confirmed live, slicing through Bambuddy:
  *
  *   project slots  presets  result
  *   1              1 or 4   slices
@@ -60,21 +61,48 @@ export const AMS_SLOTS = 4;
  *                           the correct size!")
  *   7 (6 used)     6 or 7   slices
  *
- * So a pipeline fits when it loads at least the colours the plate uses and,
- * for a project with two or more slots, no more than it defines. Closest to
- * the used count wins: that is also what the owner maps to the AMS. `null`
- * when nothing fits.
+ * The project's own count is the one that slices in every case measured, and
+ * it gives every slot the PLA preset rather than leaving some to the file's.
  */
-export function pickPipeline<P extends { id: number; filaments: number }>(
-  pipelines: readonly P[],
-  used: number,
-  projectSlots: number,
-): P | null {
-  const fits = pipelines.filter(
-    (p) => p.filaments >= used && (projectSlots <= 1 || p.filaments <= projectSlots),
-  );
-  fits.sort((a, b) => a.filaments - b.filaments || a.id - b.id);
-  return fits[0] ?? null;
+export function filamentCountFor(projectSlots: number, fallback: number): number {
+  return projectSlots >= 1 ? projectSlots : fallback;
+}
+
+/** How a ticket's print-queue entries stand, from a Bambuddy batch or each entry. */
+export type QueueCounts = {
+  pending: number;
+  printing: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  skipped: number;
+};
+
+/**
+ * A ticket's status from all of its queue entries — one per plate per copy.
+ * `note` goes on the ticket as its message when there's something a person
+ * should know (some prints didn't happen; the entries vanished).
+ */
+export function queueOutcome(c: QueueCounts): { status: StoryStatus; note: string | null } {
+  const didnt = c.failed + c.cancelled + c.skipped;
+  const total = c.pending + c.printing + c.completed + didnt;
+  if (total === 0) {
+    return { status: "Failed", note: "Its print queue entries were removed in Bambuddy." };
+  }
+  if (c.printing > 0 || (c.pending > 0 && c.completed > 0)) {
+    return { status: "Printing", note: c.completed > 0 ? `${c.completed} of ${total} printed so far.` : null };
+  }
+  if (c.pending > 0) return { status: "Ready", note: null };
+  if (c.completed > 0) {
+    return {
+      status: "Done",
+      note: didnt > 0 ? `${c.completed} of ${total} printed; ${didnt} didn't (failed or cancelled in Bambuddy).` : null,
+    };
+  }
+  return {
+    status: "Failed",
+    note: `${total === 1 ? "The print" : `None of the ${total} prints`} went through — failed or cancelled in Bambuddy.`,
+  };
 }
 
 /**

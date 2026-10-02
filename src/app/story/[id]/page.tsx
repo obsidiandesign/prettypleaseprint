@@ -155,6 +155,13 @@ export default async function StoryPage({
                     {story.colorName}
                   </span>
                 </Fact>
+                {story.printSeconds !== null && (
+                  <Fact label="Print time">
+                    {printTime(story.printSeconds)}
+                    {story.filamentGrams !== null && ` · ${Math.round(story.filamentGrams)} g`}
+                    {story.quantity > 1 && " each"}
+                  </Fact>
+                )}
                 {story.neededBy && (
                   <Fact label="Needed by">
                     {story.neededBy.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
@@ -301,4 +308,12 @@ async function EditableColours({ storyId, slots }: { storyId: number; slots: Col
   } catch {
     return <ColourSlots storyId={storyId} slots={slots} spools={null} inventoryError from={`/story/${storyId}`} />;
   }
+}
+
+/** "3 h 20 min", "45 min" — from the sliced file, so a real figure, not a guess. */
+function printTime(seconds: number): string {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `${h} h${m > 0 ? ` ${m} min` : ""}` : `${m} min`;
 }

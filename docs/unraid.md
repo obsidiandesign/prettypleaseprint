@@ -112,9 +112,8 @@ expected.
      it for good.
    - `DATA_ROOT`, on a pool rather than the `/mnt/user` FUSE layer
    - `ADMIN_EMAIL`, `ADMIN_NAME`
-   - `BAMBUDDY_API_KEY`, and `BAMBUDDY_PIPELINES` (or `BAMBUDDY_PIPELINE_ID`;
-     see [Bambuddy and the sync](deployment.md#bambuddy-and-the-sync) for why
-     there's one pipeline per filament count)
+   - `BAMBUDDY_API_KEY` and `BAMBUDDY_PIPELINE_ID` (the pipeline used as a
+     settings template; see [Bambuddy and the sync](deployment.md#bambuddy-and-the-sync))
 4. **Compose Up.**
 
 The first start creates the database, applies migrations and creates the

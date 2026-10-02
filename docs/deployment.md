@@ -212,26 +212,25 @@ On the Bambuddy side, once:
    only. Leave Control Printer off: a compromise of this app can then slice and
    queue, but never start, stop or touch a running print. A dedicated account
    keeps the key working if your own account's role changes.
-2. **Slicer Pipelines for PLA, one per filament count.** Make one pipeline
-   (printer, process, bed and dispatch settings as you like), then copies of
-   it with **1, 2, 3 and 4** "PLA Basic" filament presets. List their ids in
-   `BAMBUDDY_PIPELINES`, e.g. `"5,6,7,1"`. The app picks per model, because
-   Bambu Studio crashes when a pipeline loads more filaments than a
-   multi-colour model defines (a 4-preset pipeline can't slice a 2- or
-   3-colour model). With only `BAMBUDDY_PIPELINE_ID`, single-colour and
-   4-colour models still work and the rest are flagged to you. Every request
-   is PLA whatever colour was picked, which is why the form only offers PLA
-   spools. The dispatch settings should add the result to the print queue: a
-   run that never produces a queue entry is marked `Failed` after two
-   minutes, with a pointer back here.
+2. **One Slicer Pipeline, as the settings template.** Its id goes in
+   `BAMBUDDY_PIPELINE_ID`. The app doesn't run it: it slices each request
+   itself with the pipeline's printer, process, bed type, filament preset and
+   target printer as the starting point, then adds what a pipeline run can't,
+   per model: the designer's own settings, every plate, and one filament per
+   colour slot (see [Slicing and queueing](architecture.md#slicing-and-queueing)).
+   So set it up the way you'd want any request sliced, with **PLA Basic** as
+   its first filament preset (every request is PLA whatever colour was
+   picked, which is why the form only offers PLA spools), and its target as
+   your printer or printer model. Pipelines made per filament count for
+   `BAMBUDDY_PIPELINES` before this aren't needed; if that's set, its first
+   id is used as the template.
 3. **Bambu Cloud signed in.** MakerWorld downloads go through it. When that
    sign-in expires, new requests wait in `Requested` with a message, the admin
    is told once, and they carry on by themselves once it is renewed.
 
 Then in `.env.docker`: `BAMBUDDY_URL`, `BAMBUDDY_API_KEY`,
-`BAMBUDDY_PIPELINES` (or `BAMBUDDY_PIPELINE_ID`) and `CRON_SECRET`. In
-production the app refuses a Bambuddy call without the URL, the key, or a
-pipeline.
+`BAMBUDDY_PIPELINE_ID` and `CRON_SECRET`. In production the app refuses a
+Bambuddy call without the URL, the key, or the template pipeline.
 
 **Schedule the sync — nothing in the stack does.** Status moves by polling
 Bambuddy, and `POST /api/cron/sync` is the poll. It needs

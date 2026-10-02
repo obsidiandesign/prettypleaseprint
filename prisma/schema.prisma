@@ -298,10 +298,26 @@ model Story {
   // --- the Bambuddy handoff chain — see src/lib/bambuddy.ts. Each is set as
   // the request clears that stage; earlier ones stay populated afterward. ---
   libraryFileId       Int?
+  /// Legacy: tickets sliced through a Slicer Pipeline before direct slicing.
   pipelineRunId       Int?
   slicedLibraryFileId Int?
   queueItemId         Int?
   archiveId           Int?
+
+  // --- direct slicing (see "Slicing and queueing" in docs/architecture.md):
+  // the slice job while it runs, then the queue batch or entries it became.
+  /// Bambuddy's slice job. In Bambuddy's memory only, and forgotten 30
+  /// minutes after it finishes or on a restart — sync re-slices if it's gone.
+  sliceJobId   Int?
+  /// The model's plates to queue, one entry (per copy) each. Empty: just one.
+  printPlates  Int[]   @default([])
+  /// With copies, every plate's entries share one Bambuddy batch.
+  queueBatchId Int?
+  /// The entries queued without a batch (one copy), one per plate.
+  queueItemIds Int[]   @default([])
+  /// From the sliced file, for the ticket.
+  printSeconds  Int?
+  filamentGrams Float?
 
   /// Set when `processIntake` claims the row, so the synchronous call from
   /// intake and a cron tick can't both run it. Cleared on failure; a stale

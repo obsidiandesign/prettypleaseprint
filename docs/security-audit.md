@@ -110,6 +110,16 @@ every time. That was caught by testing against the live printer before
 release, not by a scanner. It has no automated test in CI, which has no
 Bambuddy.
 
+*October 2026:* the race is gone rather than won. The app now slices and
+queues each request itself (see
+[architecture](architecture.md#slicing-and-queueing)), and every entry it
+queues is **created** with manual start, so none ever exists wanting to
+auto-start. The switching described above remains only for tickets sliced
+through a pipeline run before that change. Queueing is behind the same claim
+as intake, so two sync passes cannot queue one ticket twice; that, the batch
+handling and the re-slice of a forgotten job are covered by a local suite
+against a fake Bambuddy, still not by CI.
+
 ### Residual risk accepted
 
 - **Bambuddy's error text reaches the requester verbatim.** That is on purpose,

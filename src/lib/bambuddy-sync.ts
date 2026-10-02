@@ -4,21 +4,36 @@ import type { Prisma, StoryStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { record } from "@/lib/audit";
 import { notify, printerOwner } from "@/lib/authz";
-import { AMS_SLOTS, deriveStatus, isTerminal, pickPipeline, storyRef } from "@/lib/scope";
+import {
+  AMS_SLOTS,
+  deriveStatus,
+  filamentCountFor,
+  isTerminal,
+  queueOutcome,
+  storyRef,
+  type QueueCounts,
+} from "@/lib/scope";
 import {
   BambuddyCloudExpiredError,
   BambuddyError,
+  addToQueue,
   getFilamentSlots,
+  getLibraryPlates,
   getPipelineRun,
+  getQueueBatch,
+  getSliceJob,
   getSlicerPipeline,
   getQueueItem,
   importMakerWorldModel,
-  pipelineIds,
+  sliceLibraryFile,
+  templatePipelineId,
   resolveMakerWorldUrl,
-  runSlicerPipeline,
   setManualStart,
   type FilamentRequirement,
   type MakerWorldResolvedModel,
+  type SliceJob,
+  type SliceRequest,
+  type SlicerPipeline,
   type PipelineRun,
 } from "@/lib/bambuddy";
 
@@ -233,77 +248,238 @@ async function recordFilaments(
   }
 }
 
-/**
- * The pipeline to slice this model with — see `pickPipeline` for the rule
- * and `pipelineIds` for where the candidates come from. With the model's
- * colours unknown (the read failed), the first configured pipeline, which is
- * what every request used before there was more than one.
- */
-async function choosePipeline(used: number, projectSlots: number): Promise<number> {
-  const ids = pipelineIds();
-  if (ids.length === 0) {
-    throw new IntakeProblem(
-      "The printer isn't set up to slice yet — the printer owner has been told.",
-      "No Slicer Pipeline is configured: set BAMBUDDY_PIPELINES (or BAMBUDDY_PIPELINE_ID).",
-    );
+const NOT_SET_UP = "The printer isn't set up to slice yet — the printer owner has been told.";
+
+/** The template pipeline's settings — see `templatePipelineId`. */
+async function loadTemplate(): Promise<SlicerPipeline> {
+  const id = templatePipelineId();
+  if (!id) {
+    throw new IntakeProblem(NOT_SET_UP, "No Slicer Pipeline is set as the settings template: set BAMBUDDY_PIPELINE_ID.");
   }
-  if (used === 0) return ids[0]!;
+  try {
+    const template = await getSlicerPipeline(id);
+    if (!template.filament_presets?.[0]) {
+      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id} (the template) has no filament preset.`);
+    }
+    return template;
+  } catch (error) {
+    if (error instanceof BambuddyError && error.status === 404) {
+      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id}, the settings template, doesn't exist in Bambuddy.`);
+    }
+    throw error;
+  }
+}
 
-  const pipelines = await Promise.all(
-    ids.map(async (id) => {
-      try {
-        const p = await getSlicerPipeline(id);
-        return { id, filaments: p.filament_presets.length };
-      } catch (error) {
-        if (error instanceof BambuddyError && error.status === 404) {
-          throw new IntakeProblem(
-            "The printer isn't set up to slice this yet — the printer owner has been told.",
-            `Slicer Pipeline ${id}, listed in BAMBUDDY_PIPELINES, doesn't exist in Bambuddy.`,
-          );
-        }
-        throw error;
-      }
+/** `#RRGGBB(AA)` for the slicer, from a spool's `RRGGBBAA` or a designer's `#RRGGBB`. */
+function hashHex(value: string | null | undefined): string {
+  return hexOrNull(value ?? null) ?? "";
+}
+
+/**
+ * Everything one slice of a library file needs, from the template and the
+ * file itself. The same plan is rebuilt for a re-slice, so it reads the
+ * ticket's colour picks rather than anything held in memory.
+ *
+ * - **Filaments:** one PLA preset per slot the project defines
+ *   (`filamentCountFor`) — a pipeline's fixed count crashed the slicer.
+ * - **Designer's settings:** what Bambuddy's own "use the designer's
+ *   settings" applies — every process setting the file says its designer
+ *   changed, except the printer-coupled ones (tuned for their machine) and
+ *   the preset-defining ones (the template's pick wins). Omitted, not empty,
+ *   when the file lists none: an empty list tells Bambuddy "offered, all
+ *   declined", which also holds back its support carry-over.
+ * - **Plates:** all of them, as one multi-plate 3MF (`plate: 0`); each is
+ *   queued separately afterwards. A file with just one plate slices that one.
+ * - **Colours:** the ticket's pick per slot, else the designer's, so the
+ *   sliced file records what will actually print where it knows.
+ */
+async function planSlice(
+  storyId: number,
+  libraryFileId: number,
+): Promise<{ request: SliceRequest; printPlates: number[]; template: SlicerPipeline }> {
+  const template = await loadTemplate();
+
+  const [slots, plates, picks] = await Promise.all([
+    getFilamentSlots(libraryFileId).catch((error) => {
+      console.error(`[slice] ${storyRef(storyId)}: couldn't read the model's filament slots`, error);
+      return null;
     }),
-  );
+    getLibraryPlates(libraryFileId).catch((error) => {
+      console.error(`[slice] ${storyRef(storyId)}: couldn't read the model's plates`, error);
+      return null;
+    }),
+    db.storyFilament.findMany({ where: { storyId }, select: { slotId: true, colorHex: true, designColor: true } }),
+  ]);
 
-  const pick = pickPipeline(pipelines, used, projectSlots);
-  if (pick) return pick.id;
+  const count = filamentCountFor(slots?.projectSlots ?? 0, template.filament_presets.length);
+  const colours = Array.from({ length: count }, (_, i) => {
+    const slotId = i + 1;
+    const pick = picks.find((p) => p.slotId === slotId);
+    const designed = slots?.all.find((f) => f.slot_id === slotId)?.color;
+    return hashHex(pick?.colorHex) || hashHex(pick?.designColor) || hashHex(designed);
+  });
 
-  const colours = `${used} colour${used === 1 ? "" : "s"}`;
-  const wanted = projectSlots <= 1 || used === projectSlots ? `${used}` : `${used} to ${projectSlots}`;
-  throw new IntakeProblem(
-    `The printer isn't set up for a model like this yet (it uses ${colours}) — the printer owner has been told.`,
-    `No Slicer Pipeline fits: the model uses ${colours} and its project defines ${projectSlots} filament ` +
-      `slot${projectSlots === 1 ? "" : "s"}. Add a PLA pipeline with ${wanted} filament presets in Bambuddy and ` +
-      `list its id in BAMBUDDY_PIPELINES (configured now: ` +
-      `${pipelines.map((p) => `#${p.id} with ${p.filaments}`).join(", ")}). It retries by itself after that.`,
+  const indices = (plates?.plates ?? []).map((p) => p.index).filter((n) => Number.isInteger(n) && n > 0);
+  const offered = plates?.design_overrides ?? [];
+
+  const request: SliceRequest = {
+    printer_preset: template.printer_preset,
+    process_preset: template.process_preset,
+    filament_presets: Array.from({ length: count }, () => template.filament_presets[0]!),
+    filament_colours: colours,
+    bed_type: template.bed_type,
+    export_3mf: true,
+    ...(indices.length > 1 ? { plate: 0 } : indices.length === 1 ? { plate: indices[0]! } : {}),
+    ...(offered.length > 0 && {
+      design_overrides: offered.filter((o) => !o.printer_coupled && !o.preset_defining).map((o) => o.key),
+    }),
+  };
+  // Plate 1 alone needs no plate on its queue entry; anything else does.
+  const printPlates = indices.length > 1 || (indices.length === 1 && indices[0] !== 1) ? indices : [];
+  return { request, printPlates, template };
+}
+
+/** Plan and start a slice; the caller records `sliceJobId`. */
+async function startSlice(storyId: number, libraryFileId: number) {
+  const plan = await planSlice(storyId, libraryFileId);
+  const { job_id } = await sliceLibraryFile(libraryFileId, plan.request);
+  return { jobId: job_id, printPlates: plan.printPlates };
+}
+
+/**
+ * Claim a story for Bambuddy work — queueing a finished slice, or slicing it
+ * again — the same way intake claims it, so a cron pass and intake (or two
+ * passes) can never queue one ticket twice. Released by the status write
+ * that ends the work (`intakeStartedAt: null`).
+ */
+async function claim(storyId: number): Promise<boolean> {
+  const now = new Date();
+  const won = await db.story.updateMany({
+    where: { id: storyId, ...intakeNotRunning(now) },
+    data: { intakeStartedAt: now },
+  });
+  return won.count === 1;
+}
+
+type AnnounceableStory = { id: number; title: string; status: StoryStatus; uploaderId: string; quantity: number };
+
+/**
+ * Queue a finished slice: one entry per plate per copy, every one created
+ * waiting for a person (see `addToQueue`). With copies, all of them — every
+ * plate's — share one batch, which is what the ticket then follows; a single
+ * copy has no batch, so its entries are followed one by one.
+ */
+async function queueSliced(
+  story: AnnounceableStory,
+  result: NonNullable<SliceJob["result"]>,
+  printPlates: number[],
+  announcedFrom: StoryStatus,
+): Promise<void> {
+  const template = await loadTemplate();
+  const target =
+    template.target_kind === "printer" && template.target_printer_id
+      ? { printer_id: template.target_printer_id }
+      : template.target_model_class
+        ? { target_model: template.target_model_class }
+        : {};
+
+  let batchId: number | null = null;
+  const itemIds: number[] = [];
+  for (const plate of printPlates.length > 0 ? printPlates : [undefined]) {
+    const item = await addToQueue({
+      library_file_id: result.library_file_id,
+      quantity: story.quantity,
+      ...target,
+      ...(plate !== undefined && { plate_id: plate }),
+      ...(batchId !== null && { batch_id: batchId }),
+    });
+    batchId ??= item.batch_id ?? null;
+    itemIds.push(item.id);
+  }
+
+  await applyStatusChange(
+    story,
+    "Ready",
+    {
+      slicedLibraryFileId: result.library_file_id,
+      queueBatchId: batchId,
+      queueItemIds: batchId !== null ? [] : itemIds,
+      printSeconds: Math.round(result.print_time_seconds) || null,
+      filamentGrams: result.filament_used_g || null,
+      errorMessage: null,
+      intakeStartedAt: null,
+    },
+    announcedFrom,
   );
 }
+
+/** A slice Bambuddy reports as failed: final, with the slicer's own reason. */
+async function sliceFailed(story: AnnounceableStory, job: SliceJob, announcedFrom: StoryStatus): Promise<void> {
+  const reason = `Slice failed: ${job.error_detail?.trim() || "Bambuddy gave no reason."}`;
+  await applyStatusChange(story, "Failed", { errorMessage: reason, intakeStartedAt: null }, announcedFrom);
+  await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — needs attention: ${reason}`, story.id);
+}
+
+/** Where a queued ticket stands: its batch's counts, or each of its entries. */
+async function queueProgress(story: { queueBatchId: number | null; queueItemIds: number[] }) {
+  const counts: QueueCounts = { pending: 0, printing: 0, completed: 0, failed: 0, cancelled: 0, skipped: 0 };
+  let detail: string | null = null;
+
+  if (story.queueBatchId !== null) {
+    const batch = await getQueueBatch(story.queueBatchId);
+    if (batch) {
+      counts.pending = batch.pending_count;
+      counts.printing = batch.printing_count;
+      counts.completed = batch.completed_count;
+      counts.failed = batch.failed_count;
+      counts.cancelled = batch.cancelled_count;
+      counts.skipped = batch.skipped_count;
+    }
+  } else {
+    for (const id of story.queueItemIds) {
+      const item = await getQueueItem(id).catch((error) => {
+        if (error instanceof BambuddyError && error.status === 404) return null; // removed in Bambuddy
+        throw error;
+      });
+      if (!item) continue;
+      counts[item.status] += 1;
+      // One entry's own words beat a summary: why it failed, or why a
+      // pending one is waiting (e.g. "sliced for A1, not compatible with P2S").
+      detail ??= item.status === "failed" ? item.error_message : item.status === "pending" ? item.waiting_reason : null;
+    }
+  }
+
+  const outcome = queueOutcome(counts);
+  return { status: outcome.status, note: outcome.status === "Failed" || outcome.status === "Ready" ? detail ?? outcome.note : outcome.note };
+}
+
+/** Intake waits this long for a slice before leaving it to the sync. */
+const INTAKE_SLICE_POLLS = 7;
+const INTAKE_SLICE_POLL_MS = 3000;
 
 const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
 
 /**
- * Send a request to Bambuddy for the first time: resolve, import, kick off
- * the standard-PLA pipeline (`BAMBUDDY_PIPELINE_ID` — see bambuddy.ts,
- * there's only the one). Called once, synchronously, right after a story is
+ * Send a request to Bambuddy for the first time: resolve, import, read its
+ * colours, and start slicing it directly (`planSlice`, from the template
+ * pipeline's settings). Called once, synchronously, right after a story is
  * created, and again for any story `syncOpenStories` still finds `Requested`
  * on a later pass, so a transient failure (Bambuddy briefly down, Bambu
  * Cloud expired) heals itself once the underlying problem is fixed, without
  * anyone having to retry by hand.
  *
- * The handoff — `libraryFileId`, `pipelineRunId`, `Slicing` — is saved the
- * moment the pipeline run exists. Then it polls tightly (a few seconds
- * apart) for up to ~40s, specifically to catch and secure a queue entry as
- * early as possible — see `secureQueueEntries` — and tells the requester
- * where the story landed. If dispatch hasn't happened by then, or the poll
- * fails, `syncStory`'s regular poll picks up the queue entry (and secures
- * it) whenever it does appear.
+ * The handoff — `libraryFileId`, `sliceJobId`, `Slicing` — is saved the
+ * moment the slice job exists. Then it waits a few seconds for the slice
+ * and, if it's done, queues it (`queueSliced`, every entry created waiting
+ * for a person) and tells the requester where the story landed. A slower
+ * slice is `syncStory`'s to finish on a later pass.
  *
  * Never throws. A failure before the handoff is swallowed into
  * `errorMessage` and retried: a failed intake attempt is not a bug, it's
- * exactly the case `Requested` with an error exists for. A notification to the admin only fires the *first*
- * time a given error appears, so a problem that needs a human (Bambu Cloud
- * re-auth, most likely) is announced once rather than every sync interval.
+ * exactly the case `Requested` with an error exists for. A notification to
+ * the admin only fires the *first* time a given error appears, so a problem
+ * that needs a human (Bambu Cloud re-auth, most likely) is announced once
+ * rather than every sync interval.
  */
 export async function processIntake(storyId: number): Promise<void> {
   const story = await db.story.findUnique({
@@ -316,9 +492,9 @@ export async function processIntake(storyId: number): Promise<void> {
   });
   if (!story || story.status !== "Requested" || story.libraryFileId) return;
 
-  // The check above is only a snapshot, and nothing is written for ~40s
-  // below — long enough for a cron tick to start a second import of the same
-  // story. Claim the row atomically; whoever loses the race backs off.
+  // The check above is only a snapshot, and nothing is written until the
+  // slice has started — long enough for a cron tick to start a second import
+  // of the same story. Claim the row atomically; whoever loses the race backs off.
   const now = new Date();
   const claimed = await db.story.updateMany({
     where: {
@@ -331,7 +507,7 @@ export async function processIntake(storyId: number): Promise<void> {
   });
   if (claimed.count === 0) return;
 
-  let handoff: PipelineRun;
+  let handoff: { jobId: number; printPlates: number[] };
   let slots: FilamentRequirement[] = [];
   let profileFellBack = false;
   try {
@@ -371,57 +547,40 @@ export async function processIntake(storyId: number): Promise<void> {
       throw error;
     }
 
-    // The model's colours decide which pipeline can slice it. A failed read
-    // isn't fatal: choosePipeline falls back to the first pipeline, and the
-    // ticket just won't list its colours.
-    let projectSlots = 0;
+    // The model's colours, recorded before slicing so a re-slice (and the
+    // slice itself) uses the ticket's picks. Best-effort: a failed read just
+    // means no colour slots, and the slice falls back to the template's count.
     try {
-      ({ used: slots, projectSlots } = await getFilamentSlots(imported.library_file_id));
+      slots = (await getFilamentSlots(imported.library_file_id)).used;
     } catch (error) {
       console.error(`[intake] ${storyRef(story.id)}: couldn't read the model's colours`, error);
     }
-    const pipelineId = await choosePipeline(slots.length, projectSlots);
+    await recordFilaments(story, slots);
 
-    let run: PipelineRun;
-    try {
-      run = await runSlicerPipeline(pipelineId, imported.library_file_id, story.quantity);
-    } catch (error) {
-      // Confirmed live: refused with 409 and an eligibility report when the
-      // pipeline has no target printer or model class configured — see
-      // BAMBUDDY_PIPELINE_ID in .env.example. Distinct from a transient
-      // failure: nothing here self-heals until an admin fixes the pipeline
-      // in Bambuddy, so it's worth naming specifically rather than folding
-      // into the generic message below.
-      if (error instanceof BambuddyError && error.status === 409) {
-        throw new IntakeProblem(
-          "Bambuddy's Slicer Pipeline isn't configured with a target printer or " +
-            "model class — fix this in Bambuddy under Settings → Slicer Pipelines.",
-        );
-      }
-      throw error;
-    }
+    const slice = await startSlice(story.id, imported.library_file_id);
 
-    // Record the handoff the moment the run exists, before anything else can
-    // throw. From here on the story belongs to `syncStory`, not to a retry of
-    // this function: a retry would start a second run, and nothing would
-    // ever watch the first one's queue entry — which then auto-starts.
-    // Guarded on `Requested` as a backstop; decline and withdraw already
-    // refuse while the claim above is held.
+    // Record the handoff the moment the slice job exists. From here on the
+    // story belongs to `syncStory`: it queues the result, or slices again if
+    // Bambuddy forgets the job. Nothing can print from a slice the app never
+    // queued, so a lost job costs only a re-slice. Guarded on `Requested` as
+    // a backstop; decline and withdraw already refuse while the claim above
+    // is held.
     const handedOff = await db.story.updateMany({
       where: { id: story.id, status: "Requested" },
       data: {
         libraryFileId: imported.library_file_id,
-        pipelineRunId: run.id,
+        sliceJobId: slice.jobId,
+        printPlates: slice.printPlates,
         status: "Slicing",
         resolvedTitle: resolvedTitleFrom(resolved),
         errorMessage: null,
       },
     });
     if (handedOff.count === 0) {
-      console.error(`[intake] ${storyRef(story.id)} left Requested mid-intake; pipeline run ${run.id} is unowned`);
+      console.error(`[intake] ${storyRef(story.id)} left Requested mid-intake; slice job ${slice.jobId} is unowned`);
       return;
     }
-    handoff = run;
+    handoff = slice;
   } catch (error) {
     const message =
       error instanceof BambuddyCloudExpiredError || error instanceof IntakeProblem
@@ -466,57 +625,29 @@ export async function processIntake(storyId: number): Promise<void> {
     });
   }
 
-  await recordFilaments(story, slots);
-
-  // Past the handoff: poll tightly to secure the queue entry early. A
-  // failure here is not an intake failure — `syncStory` secures and advances
-  // the same run on its next pass — so it only ends the tight poll.
+  // Past the handoff: wait briefly for the slice, since a small model is
+  // done in seconds and the requester is still on the form. Anything slower
+  // is `syncStory`'s, on its next pass.
   const asSlicing = { ...story, status: "Slicing" as StoryStatus };
-  let run = handoff;
   try {
-    for (let i = 0; i < 20; i++) {
-      const secured = await secureQueueEntries(run);
-      if (secured.length > 0) {
-        const item = await getQueueItem(secured[0]!);
-        const to = deriveStatus({ queueItemStatus: item.status });
-        await applyStatusChange(asSlicing, to, {
-          queueItemId: secured[0]!,
-          slicedLibraryFileId: run.sliced_library_file_id,
-          archiveId: item.archive_id,
-          errorMessage: to === "Failed" ? item.error_message : item.waiting_reason,
-          intakeStartedAt: null,
-        }, "Requested");
+    for (let i = 0; i < INTAKE_SLICE_POLLS; i++) {
+      await sleep(INTAKE_SLICE_POLL_MS);
+      const job = await getSliceJob(handoff.jobId);
+      if (!job) break; // forgotten already: sync slices it again
+      if (job.status === "completed" && job.result) {
+        await queueSliced(asSlicing, job.result, handoff.printPlates, "Requested");
         return;
       }
-      if (RUN_SETTLED.has(run.status) || unqueuedReason(run)) break;
-
-      await sleep(2000);
-      const refreshed = await getPipelineRun(run.id);
-      if (!refreshed) break;
-      run = refreshed;
+      if (job.status === "failed") {
+        await sliceFailed(asSlicing, job, "Requested");
+        return;
+      }
     }
-
-    const unqueued = unqueuedReason(run);
-    if (unqueued) {
-      await applyStatusChange(asSlicing, "Failed", {
-        slicedLibraryFileId: run.sliced_library_file_id,
-        errorMessage: unqueued,
-        intakeStartedAt: null,
-      }, "Requested");
-      await notifyAdmin(`${storyRef(story.id)} — “${story.title}” — needs attention: ${unqueued}`, story.id);
-      return;
-    }
-
-    const to = deriveStatus({ pipelineRunStatus: run.status });
-    await applyStatusChange(asSlicing, to, {
-      slicedLibraryFileId: run.sliced_library_file_id,
-      errorMessage: to === "Failed" ? run.error_message : null,
-      intakeStartedAt: null,
-    }, "Requested");
+    await applyStatusChange(asSlicing, "Slicing", { intakeStartedAt: null }, "Requested");
   } catch (error) {
     // The handoff is already saved, so the story is safe either way; at
     // worst the requester hears about its status one sync pass later.
-    console.error(`[intake] ${storyRef(story.id)}: polling pipeline run ${run.id} failed; sync will continue`, error);
+    console.error(`[intake] ${storyRef(story.id)}: waiting on slice job ${handoff.jobId} failed; sync will continue`, error);
     await db.story
       .update({ where: { id: story.id }, data: { intakeStartedAt: null } })
       .catch(() => {}); // row withdrawn, or the DB is down — the lease expires on its own
@@ -538,6 +669,12 @@ async function applyStatusChange(
     archiveId?: number | null;
     errorMessage?: string | null;
     intakeStartedAt?: null;
+    sliceJobId?: number;
+    printPlates?: number[];
+    queueBatchId?: number | null;
+    queueItemIds?: number[];
+    printSeconds?: number | null;
+    filamentGrams?: number | null;
   } = {},
   /**
    * The status the requester last heard about, when it differs from the
@@ -575,24 +712,31 @@ async function applyStatusChange(
 
 /**
  * Advance a story that's already reached Bambuddy (`libraryFileId` is set).
- * Two stages, told apart by whether a queue item exists yet:
  *
+ * Sliced directly (every ticket since direct slicing):
+ *   - Queued (`queueBatchId` or `queueItemIds`): status from all its entries
+ *     together — `queueOutcome`.
+ *   - Slicing (`sliceJobId`): when the job has finished, queue the result;
+ *     when it failed, `Failed` with the slicer's reason; when Bambuddy has
+ *     forgotten it, slice again. Queueing and re-slicing take the same claim
+ *     as intake, so nothing is ever queued twice.
+ *
+ * Legacy, for tickets sliced through a Slicer Pipeline run before that:
  *   - No `queueItemId`: watch the pipeline run, and — every poll, not just
  *     once — check for a queue entry among its jobs and secure it the
- *     moment one appears. This is the fallback for whatever `processIntake`'s
- *     own tight poll didn't catch; see `secureQueueEntries`'s own comment
- *     for why that matters.
+ *     moment one appears; see `secureQueueEntries`'s own comment for why.
  *   - `queueItemId` set: watch the queue item and apply `deriveStatus`
  *     directly. Also re-asserts manual-start defensively while the item is
- *     still `pending` — cheap, and this is the one thing in the whole flow
- *     worth being paranoid about twice.
+ *     still `pending`.
  */
 export async function syncStory(storyId: number): Promise<void> {
   const story = await db.story.findUnique({
     where: { id: storyId },
     select: {
-      id: true, title: true, status: true, uploaderId: true,
+      id: true, title: true, status: true, uploaderId: true, quantity: true,
       pipelineRunId: true, queueItemId: true, intakeStartedAt: true,
+      libraryFileId: true, sliceJobId: true, printPlates: true,
+      queueBatchId: true, queueItemIds: true,
     },
   });
   if (!story || isTerminal(story.status)) return;
@@ -604,6 +748,46 @@ export async function syncStory(storyId: number): Promise<void> {
   const intakeRunning =
     story.intakeStartedAt !== null &&
     story.intakeStartedAt.getTime() > Date.now() - INTAKE_LEASE_MS;
+
+  // --- sliced and queued directly (every ticket since direct slicing) ---
+  if (story.queueBatchId !== null || story.queueItemIds.length > 0) {
+    const progress = await queueProgress(story);
+    await applyStatusChange(story, progress.status, { errorMessage: progress.note });
+    return;
+  }
+  if (story.sliceJobId !== null) {
+    if (intakeRunning) return; // intake is waiting on this slice itself
+    const job = await getSliceJob(story.sliceJobId);
+    if (job && job.status !== "completed" && job.status !== "failed") return; // still slicing
+
+    if (job?.status === "failed") {
+      await sliceFailed(story, job, story.status);
+      return;
+    }
+    if (!(await claim(story.id))) return;
+    try {
+      if (job?.status === "completed" && job.result) {
+        await queueSliced(story, job.result, story.printPlates, story.status);
+      } else {
+        // Bambuddy forgot the job — restarted, or it finished more than 30
+        // minutes ago without this pass seeing it. Nothing was queued from
+        // it, so slicing again is safe; at worst the library keeps a spare
+        // sliced file.
+        const slice = await startSlice(story.id, story.libraryFileId!);
+        await db.story.update({
+          where: { id: story.id },
+          data: { sliceJobId: slice.jobId, printPlates: slice.printPlates, intakeStartedAt: null },
+        });
+        console.info(`[sync] ${storyRef(story.id)}: slice job ${story.sliceJobId} was gone; re-sliced as ${slice.jobId}`);
+      }
+    } catch (error) {
+      await db.story.update({ where: { id: story.id }, data: { intakeStartedAt: null } }).catch(() => {});
+      throw error;
+    }
+    return;
+  }
+
+  // --- legacy: sliced through a Slicer Pipeline run, before direct slicing ---
 
   if (story.queueItemId) {
     if (story.status === "Ready") {

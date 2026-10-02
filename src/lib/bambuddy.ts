@@ -32,21 +32,22 @@ const baseUrl = () => bambuddyEnv("BAMBUDDY_URL").replace(/\/+$/, "");
 const apiKey = () => bambuddyEnv("BAMBUDDY_API_KEY");
 
 /**
- * The Slicer Pipelines this deployment may slice with: `BAMBUDDY_PIPELINES`
- * (comma-separated ids), or else the single `BAMBUDDY_PIPELINE_ID`.
+ * The Slicer Pipeline used as a settings template: printer, process, bed
+ * type, the PLA filament preset, and which printer (or model class) to queue
+ * for. Requests are not *run* through it — a pipeline run can't carry the
+ * designer's settings, choose plates, or load the right number of filaments
+ * (see "Slicing and queueing" in docs/architecture.md) — so the app slices
+ * and queues directly, with these settings as the starting point.
  *
- * All the same "P2S, standard PLA" recipe, differing only in how many
- * filament presets they carry. That count matters: confirmed live, Bambu
- * Studio's CLI aborts ("Flush volumes matrix do not match to the correct
- * size!") when a pipeline loads more filaments than a multi-colour model's
- * project defines — one 4-preset pipeline crashes on every 2- or 3-slot
- * project. `pickPipeline` (scope.ts) chooses per model. Colour never
- * selects a pipeline: every preset is PLA.
+ * `BAMBUDDY_PIPELINE_ID`, or else the first of `BAMBUDDY_PIPELINES` (which
+ * listed one pipeline per filament count before direct slicing; any of those
+ * makes a fine template, since they differ only in that count).
  */
-export function pipelineIds(): number[] {
-  const list = process.env.BAMBUDDY_PIPELINES?.trim();
-  const raw = list ? list.split(",") : [bambuddyEnv("BAMBUDDY_PIPELINE_ID")];
-  return raw.map((id) => Number(id.trim())).filter((id) => Number.isInteger(id) && id > 0);
+export function templatePipelineId(): number {
+  const single = process.env.BAMBUDDY_PIPELINE_ID?.trim();
+  const listed = process.env.BAMBUDDY_PIPELINES?.split(",")[0]?.trim();
+  const id = Number(single || listed || bambuddyEnv("BAMBUDDY_PIPELINE_ID"));
+  return Number.isInteger(id) && id > 0 ? id : 0;
 }
 
 /** A Bambuddy call that did not return 2xx. `body` is the parsed JSON error, if any. */
@@ -206,24 +207,100 @@ export async function getFilamentRequirements(libraryFileId: number): Promise<Fi
 
 /**
  * The slots the plate uses, and how many the project defines in all
- * (`full_slots`). Both matter for choosing a pipeline — see `pickPipeline` —
+ * (`full_slots`). The project's count sets how many filaments to slice with
+ (see `filamentCountFor`), and the used ones are the colours to pick —
  * and they differ more often than you'd think: a single-colour model's
  * project can define six.
  */
 export async function getFilamentSlots(
   libraryFileId: number,
-): Promise<{ used: FilamentRequirement[]; projectSlots: number }> {
+): Promise<{ used: FilamentRequirement[]; all: FilamentRequirement[]; projectSlots: number }> {
   const [used, all] = await Promise.all([
     getFilamentRequirements(libraryFileId),
     bambuddyFetch<{ filaments: FilamentRequirement[] }>(
       `/api/v1/library/files/${libraryFileId}/filament-requirements?full_slots=true`,
     ),
   ]);
-  return { used, projectSlots: all.filaments.length };
+  return { used, all: all.filaments, projectSlots: all.filaments.length };
+}
+
+/** One setting the designer changed from the stock process preset. */
+export type DesignOverride = {
+  key: string;
+  value: unknown;
+  /** Tuned for the designer's machine (speeds, accelerations, prime tower). */
+  printer_coupled: boolean;
+  /** Defines the picked process preset itself, so the pick should win. */
+  preset_defining: boolean;
+};
+
+export type LibraryPlates = {
+  is_multi_plate: boolean;
+  plates: { index: number; name: string | null }[];
+  design_overrides: DesignOverride[];
+};
+
+/** A library file's plates, and the process settings its designer changed. */
+export async function getLibraryPlates(libraryFileId: number): Promise<LibraryPlates> {
+  return bambuddyFetch<LibraryPlates>(`/api/v1/library/files/${libraryFileId}/plates`);
+}
+
+/** What `POST /library/files/{id}/slice` takes — the parts this app sets. */
+export type SliceRequest = {
+  printer_preset: PresetRef;
+  process_preset: PresetRef;
+  filament_presets: PresetRef[];
+  filament_colours?: string[];
+  bed_type?: string | null;
+  /** `0` is every plate (one multi-plate 3MF); omitted is plate 1. */
+  plate?: number;
+  /** Keys from the file's own list of designer changes; omitted when it has none. */
+  design_overrides?: string[];
+  export_3mf: true;
+};
+
+/**
+ * Start slicing a library file. Bambuddy answers 202 with a job id at once and
+ * slices in the background; poll `getSliceJob`. The sliced 3MF lands in the
+ * library as a new file, which `result.library_file_id` names.
+ */
+export async function sliceLibraryFile(libraryFileId: number, request: SliceRequest): Promise<{ job_id: number }> {
+  return bambuddyFetch<{ job_id: number }>(`/api/v1/library/files/${libraryFileId}/slice`, {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export type SliceJob = {
+  job_id: number;
+  status: "queued" | "running" | "completed" | "failed" | string;
+  completed_at: string | null;
+  result?: {
+    library_file_id: number;
+    print_time_seconds: number;
+    filament_used_g: number;
+  };
+  error_status?: number;
+  error_detail?: string;
+};
+
+/**
+ * A slice job, or `undefined` once Bambuddy has forgotten it: jobs live in
+ * its memory only, are swept 30 minutes after finishing, and are lost on a
+ * restart. The caller re-slices in that case — nothing was queued from it.
+ */
+export async function getSliceJob(jobId: number): Promise<SliceJob | undefined> {
+  try {
+    return await bambuddyFetch<SliceJob>(`/api/v1/slice-jobs/${jobId}`);
+  } catch (error) {
+    if (error instanceof BambuddyError && error.status === 404) return undefined;
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Slicing — Slicer Pipelines
+// Slicing — Slicer Pipelines (the template; and runs, for tickets from before
+// direct slicing that are still in flight)
 // ---------------------------------------------------------------------------
 
 export type PipelineRunStatus =
@@ -262,28 +339,24 @@ export type PipelineRun = {
   jobs: PipelineJob[];
 };
 
-/** Just what choosing between pipelines needs: how many filament presets it loads. */
-export type SlicerPipeline = { id: number; name: string; filament_presets: unknown[] };
+/** A preset as Bambuddy names it: `{source: "cloud", id: "GFSA00_11"}` and the like. */
+export type PresetRef = { source: string; id: string };
+
+/** The template's settings — see `templatePipelineId`. */
+export type SlicerPipeline = {
+  id: number;
+  name: string;
+  printer_preset: PresetRef;
+  process_preset: PresetRef;
+  filament_presets: PresetRef[];
+  bed_type: string | null;
+  target_kind: "printer" | "printer_class" | string;
+  target_printer_id: number | null;
+  target_model_class: string | null;
+};
 
 export async function getSlicerPipeline(pipelineId: number): Promise<SlicerPipeline> {
   return bambuddyFetch<SlicerPipeline>(`/api/v1/slicer-pipelines/${pipelineId}`);
-}
-
-export async function runSlicerPipeline(
-  pipelineId: number,
-  sourceLibraryFileId: number,
-  copies = 1,
-): Promise<PipelineRun> {
-  // Generous on purpose: if this gave up while Bambuddy went on to create the
-  // run anyway, intake would retry and start a second one.
-  return bambuddyFetch<PipelineRun>(
-    `/api/v1/slicer-pipelines/${pipelineId}/run`,
-    {
-      method: "POST",
-      body: JSON.stringify({ source_library_file_id: sourceLibraryFileId, copies }),
-    },
-    60_000,
-  );
 }
 
 /**
@@ -329,19 +402,49 @@ export type QueueItem = {
 };
 
 /**
- * Add an already-sliced file to the queue directly, `manual_start: true`.
+ * Queue a sliced file, **created waiting for a person** (`manual_start`).
+ * That's set on creation, for every copy, so there is no window in which the
+ * entry could auto-start — unlike a pipeline run's entries, which had to be
+ * caught and switched afterwards (see `secureQueueEntries`).
  *
- * Not how a request from this app reaches the queue — a Slicer Pipeline run
- * creates its own queue entry as part of dispatching (see `PipelineJob`),
- * and that entry needs `setManualStart` after the fact, not this. Kept as a
- * general-purpose wrapper for anything that queues a file directly, outside
- * a pipeline run.
+ * `quantity` above 1 makes that many entries in one batch (and one Bambuddy
+ * notification); the response is the first entry, carrying the `batch_id`.
+ * Passing `batch_id` adds to an existing batch — how every plate of a
+ * multi-plate model ends up in the same one.
  */
-export async function addToQueue(slicedLibraryFileId: number): Promise<QueueItem> {
-  return bambuddyFetch<QueueItem>("/api/v1/queue/", {
+export async function addToQueue(params: {
+  library_file_id: number;
+  plate_id?: number;
+  quantity: number;
+  batch_id?: number;
+  printer_id?: number;
+  target_model?: string;
+}): Promise<QueueItem & { batch_id: number | null }> {
+  return bambuddyFetch<QueueItem & { batch_id: number | null }>("/api/v1/queue/", {
     method: "POST",
-    body: JSON.stringify({ library_file_id: slicedLibraryFileId, manual_start: true }),
+    body: JSON.stringify({ ...params, manual_start: true }),
   });
+}
+
+/** How a batch's entries stand: the basis of a multi-entry ticket's status. */
+export type QueueBatch = {
+  id: number;
+  status: string;
+  pending_count: number;
+  printing_count: number;
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  skipped_count: number;
+};
+
+export async function getQueueBatch(batchId: number): Promise<QueueBatch | undefined> {
+  try {
+    return await bambuddyFetch<QueueBatch>(`/api/v1/queue/batches/${batchId}`);
+  } catch (error) {
+    if (error instanceof BambuddyError && error.status === 404) return undefined;
+    throw error;
+  }
 }
 
 export async function getQueueItem(itemId: number): Promise<QueueItem> {

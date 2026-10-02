@@ -36,9 +36,9 @@ clicking.
   from the spool, never from the request. They are copied onto the row on
   purpose, so the ticket keeps showing what was asked for after that spool is
   archived or restocked.
-- **PLA only.** Every Slicer Pipeline is the same fixed PLA recipe (they
-  differ only in filament count — see [Choosing a pipeline](#choosing-a-pipeline)).
-  Colour picks a spool, never a pipeline, so a PETG spool would
+- **PLA only.** Every request is sliced with the template pipeline's PLA
+  preset (see [Slicing and queueing](#slicing-and-queueing)). Colour picks a
+  spool, never a material, so a PETG spool would
   slice cleanly and print wrong. The picker filters to PLA and the server
   refuses anything else, because the API takes any spool id.
 - Quantity, a needed-by date and a free-text note, as before.
@@ -55,16 +55,16 @@ request:
    Bambuddy's library → `libraryFileId`. If the link names a print profile
    Bambu won't serve (share links carry one), it retries once with the
    model's default profile and tells the requester.
-2. **read the model's colours**, and **choose the pipeline** that can slice
-   it (see [Choosing a pipeline](#choosing-a-pipeline))
-3. **start a pipeline run** with the requested copies → `pipelineRunId`, and
-   the ticket is `Slicing`
-4. **poll the run for ~40 s**, securing any queue entry it creates (below), and
-   tell the requester where the ticket landed
+2. **read the model's colours** and record them on the ticket (see
+   [Multi-colour models](#multi-colour-models))
+3. **start slicing it** directly → `sliceJobId`, and the ticket is `Slicing`
+   (see [Slicing and queueing](#slicing-and-queueing))
+4. **wait about 20 s** for the slice; if it's done, queue it and tell the
+   requester where the ticket landed. A slower slice is the sync's to finish.
 
-The two ids and `Slicing` are saved the moment the run exists. A crash after
-that point cannot leave the ticket `Requested` for a retry that would start a
-second run while the first one's queue entry goes unwatched.
+The slice job and `Slicing` are saved the moment the job exists. A crash after
+that point can't lead to anything printing unwatched: nothing is queued until
+the app queues it.
 
 `processIntake` never throws. If Bambuddy is down, or its Bambu Cloud sign-in
 has expired, the ticket stays `Requested` with an `errorMessage`, the admin is
@@ -74,41 +74,62 @@ spool lookup cannot reach Bambuddy, the form says so and nothing is created
 (`503` on the API).
 
 A claim (`intakeStartedAt`, a 10-minute lease) keeps the synchronous call and a
-cron tick from both importing the same story. Decline and withdraw respect the
-same claim, so they answer `409` for the few seconds intake holds a story
-rather than being overwritten mid-handoff or orphaning what it created.
+cron tick from both importing the same story, and the sync takes the same
+claim before it queues a finished slice or slices again, so a ticket is never
+queued twice. Decline and withdraw respect it too, so they answer `409` for the
+few seconds intake holds a story rather than being overwritten mid-handoff.
 
-### Choosing a pipeline
+### Slicing and queueing
 
-A Slicer Pipeline loads a fixed list of filament presets, and Bambu Studio's
-CLI can't take more filaments than a multi-colour project defines: it aborts
-with "Flush volumes matrix do not match to the correct size!", which reaches
-Bambuddy as a generic "Failed slicing the model". Measured through Bambuddy:
+The app slices and queues itself rather than through a Slicer Pipeline run.
+A pipeline run sends only its fixed printer, process, filament and bed
+presets: it can't carry a MakerWorld designer's own settings, can't choose
+plates (it slices plate 1), and loads a fixed number of filaments, which
+crashes the slicer on many multi-colour models. Bambuddy's direct slice call
+(`POST /library/files/{id}/slice`) can do all three.
 
-| Project slots | Presets loaded | Result |
-| --- | --- | --- |
-| 1 | 1 or 4 | slices |
-| 3 | 3 | slices |
-| 3 | 4 | aborts |
-| 7 (6 used) | 6 or 7 | slices |
+One pipeline is still configured (`BAMBUDDY_PIPELINE_ID`), as a **template**:
+its printer, process, bed type, PLA filament preset and target printer are the
+starting point, so they stay editable in Bambuddy's own UI. `planSlice` then
+adds, per model:
 
-So a deployment keeps one pipeline per filament count, all the same PLA
-recipe, and lists them in `BAMBUDDY_PIPELINES`. Intake asks Bambuddy how many
-presets each carries, reads the model's used and defined slot counts, and
-`pickPipeline` (scope.ts) takes the one closest to the used count that is at
-least that many and, for a project with two or more slots, no more than it
-defines. When nothing fits, no run is started: the ticket stays `Requested`
-with a plain message, the owner is told exactly which pipeline to add, and
-the next sync retries. If the colours can't be read, the first pipeline is
-used, as before this existed.
+- **Filaments:** one PLA preset per slot the model's project defines
+  (`filamentCountFor`). Bambu Studio's CLI aborts ("Flush volumes matrix do
+  not match to the correct size!") when given more filaments than a
+  multi-colour project defines. Measured through Bambuddy:
 
-The real fix is Bambuddy loading as many presets as the model has; until
-then, this keeps the crash from being reachable.
+  | Project slots | Presets loaded | Result |
+  | --- | --- | --- |
+  | 1 | 1 or 4 | slices |
+  | 3 | 3 | slices |
+  | 3 | 4 | aborts |
+  | 7 (6 used) | 6 or 7 | slices |
+
+- **The designer's settings:** exactly what Bambuddy's own "use the
+  designer's settings" applies. The file lists the process settings its
+  designer changed; all of them are carried except the printer-coupled ones
+  (speeds, accelerations, prime-tower geometry, tuned for the designer's
+  machine) and the preset-defining ones (the template's pick wins).
+- **Plates:** all of them (`plate: 0`, one multi-plate 3MF). A file with a
+  single plate slices that one.
+- **Colours:** the ticket's pick per slot, else the designer's, so the sliced
+  file records what will actually print.
+
+Bambuddy keeps slice jobs in memory only: a restart loses them, and a finished
+one is forgotten after 30 minutes. If the sync finds a job gone, it slices
+again. Nothing was queued from it, so that costs at most a spare sliced file.
+
+A finished slice is queued with **one entry per plate per copy**, every one
+**created waiting for a person** (`manual_start` set at creation), for the
+template's printer or model class. With copies, all of a ticket's entries
+share one Bambuddy batch, and the ticket follows the batch's counts; a single
+copy has no batch, so its entries are followed one by one. The slice's real
+print time and filament weight go on the ticket.
 
 ### Multi-colour models
 
-Before starting the run (see [Choosing a pipeline](#choosing-a-pipeline)),
-intake asks Bambuddy which filament slots the model's plate actually uses (`filament-requirements`, which reads the 3MF) and
+Before slicing (see [Slicing and queueing](#slicing-and-queueing)), intake
+asks Bambuddy which filament slots the model's plate actually uses (`filament-requirements`, which reads the 3MF) and
 records one `StoryFilament` row per slot: the model's slot number, the
 designer's colour, grams, and the spool it will print in. Slot numbers are
 the designer's and arbitrary (a single-colour model's only slot was 3 in the
@@ -117,7 +138,10 @@ filament, the main part in practice. The others start as the printer owner's
 choice.
 
 A model with more than one colour notifies the requester, and the ticket
-grows a *Colours* panel to pick a spool per slot. Colour can change until the
+grows a *Colours* panel to pick a spool per slot. Picks made after slicing
+don't re-slice: the colours written into the sliced file are only labels, and
+which spool feeds which part is the owner's AMS mapping when they start the
+print. Colour can change until the
 print starts (`COLOUR_EDITABLE`), because every request is sliced as PLA:
 colour never changes the slicing, only which AMS slot feeds which part when
 the owner starts the print in Bambuddy. The queue's *Ready to print* list
@@ -134,55 +158,49 @@ mapping prints the wrong colours; the owner reviews every print anyway.
 
 ### The one thing that must not be late: manual start
 
-A pipeline run creates its own queue entry as it reaches `dispatching`, often
-6–15 seconds after starting and before the run reports `completed`. That entry
-wants to **auto-start** the moment a printer is free, and Bambuddy has no
-pipeline- or instance-level setting that makes it wait for a person. The app's
-promise is that sliced work waits in a reviewed pile until somebody starts it,
-so the only lever is to PATCH `manual_start: true` onto each entry as soon as
-it exists.
+The app's promise is that sliced work waits in a reviewed pile until somebody
+starts it. Every entry the app queues is **created** with `manual_start`, so
+there is no moment in which it could start by itself.
 
-`secureQueueEntries` does that from three places: intake's tight poll, every
-sync pass while no queue entry is known yet, and a defensive re-assert on every
-pass while a known entry is still pending. It is idempotent: Bambuddy refuses
-the PATCH with `400` once an entry has left `pending`, which is treated as a
-no-op. This was found by testing against the live printer. The first version
-waited for the run to complete and would have lost the race every time.
+That was not always so. A pipeline run creates its own queue entry as it
+reaches `dispatching`, wanting to auto-start, and Bambuddy has no setting to
+make it wait, so the only lever was to switch each entry to manual start as
+soon as it appeared, racing Bambuddy's dispatch. `secureQueueEntries` still
+does that for tickets sliced through a pipeline before direct slicing: on every
+sync pass while no queue entry is known yet, and again while a known one is
+still pending. Bambuddy refuses that PATCH with `400` once an entry has left
+`pending`, which is treated as a no-op.
 
 ### Status is derived, not clicked
 
-Every status but `Declined` comes from Bambuddy through `deriveStatus` in
-`scope.ts`:
+Every status but `Declined` comes from Bambuddy:
 
 | Bambuddy | Ticket |
 | --- | --- |
-| pipeline run queued / slicing / dispatching | `Slicing` |
-| queue entry `pending` | `Ready`, waiting for the owner to start it in Bambuddy |
-| queue entry `printing` | `Printing` |
-| queue entry `completed` | `Done` |
-| run failed or cancelled; entry failed, cancelled or skipped | `Failed`, with Bambuddy's own `error_message` |
+| slice job running | `Slicing` |
+| slice job failed | `Failed`, with the slicer's own reason |
+| entries all waiting | `Ready`, waiting for the owner to start them in Bambuddy |
+| any entry printing, or some printed and some still waiting | `Printing` |
+| all finished, at least one printed | `Done`, noting any that didn't print |
+| none printed (failed, cancelled, skipped, or removed) | `Failed` |
 
-A run that completes but never produces a queue entry would otherwise read as
-`Slicing` forever. After a two-minute grace it becomes `Failed`, with the job's
-error if there is one, or a pointer at the pipeline's dispatch settings, and
-the admin is notified.
+`queueOutcome` in `scope.ts` turns a batch's counts, or each entry's status,
+into that. With a single entry, its own words are kept: why it failed, or why
+a pending entry is waiting (`waiting_reason`, e.g. "sliced for A1, not
+compatible with P2S"), because a `Ready` ticket that is quietly stuck needs the
+owner's eyes.
 
-A run can also finish with an error and never say so. Seen live: a slice that
-failed at "Generating G-code" left its run `in_progress`, with the failure in
-`error_message`, `completed_at` set and every copy still `pending`, and
-Bambuddy's own cancel answered `200` without changing it. So a run with an
-`error_message` and a `completed_at` but no queue entries counts as `Failed`,
-with that message, whatever its `status` says. Intake checks this during its
-own poll too, so a slice that fails in the first seconds is reported at once.
-
-A pending entry's `waiting_reason` (why Bambuddy has not
-started it) is surfaced as the ticket's message too, because a `Ready` ticket
-that is quietly stuck needs the owner's eyes.
+Tickets sliced through a pipeline run before direct slicing still go through
+`deriveStatus` and the run's own state until they finish. Two run quirks are
+handled there, both seen live: a run that completes but never queues anything
+becomes `Failed` after a two-minute grace, and a run whose slice failed but
+was left `in_progress` (with an `error_message` and a `completed_at`, and a
+cancel that answered `200` without changing it) counts as `Failed`.
 
 Each change notifies the requester, tells the owner when a ticket is `Ready`,
 and writes a `story.status_changed` audit row. The Bambuddy ids behind a ticket
-(`libraryFileId`, `pipelineRunId`, `slicedLibraryFileId`, `queueItemId`,
-`archiveId`) are never selected into what the pages or the API render.
+(the library files, slice job, queue batch and entries, pipeline run, archive)
+are never selected into what the pages or the API render.
 
 ### The sync, and what schedules it
 
@@ -195,8 +213,8 @@ open.
 
 **Nothing in the stack calls it.** A deployment has to: a host crontab entry
 curling it every few minutes is enough (see [Deployment](deployment.md#bambuddy-and-the-sync)).
-Without it, tickets still get their first move from intake's own poll, and then
-stop wherever they were.
+Without it, a ticket whose slice takes longer than intake's short wait stays
+`Slicing`, and nothing after `Ready` is ever seen.
 
 ### What is deliberately not handled yet
 
@@ -222,7 +240,7 @@ All five are settled, and recorded here so nobody has to re-derive them:
 | *Printing* column label — README §2 says amber `#79541a`, the prototype uses teal `#0b4340` | **Amber.** The tokens call amber "warning / in-progress only", and Printing is the in-progress state. It also makes the live column findable. |
 | Where declined stories go — `Declined` is not in the flow, so it has no column | **Off the board entirely.** The board is for work that is still moving; the profile at `/me` carries the whole history, declined included. |
 | The whole-board empty state, which the handoff says to ask about | **Minimal.** One quiet panel saying what is true, with the *Order up* button already above it. No invented onboarding. |
-| Print-time estimates | **Dropped.** See below. |
+| Print-time estimates | **Only the slicer's.** See below. |
 
 ### The stats that changed
 
@@ -232,7 +250,7 @@ are real and actionable: prints finished, tickets **Ready to print**, and
 tickets that **need a look** (anything carrying an `errorMessage`). An earlier
 version counted bytes of geometry printed; that went with the uploads.
 
-### Why there is no print-time estimate
+### The print time is the slicer's, or nothing
 
 A figure derived from the bounding box is a guess dressed as a measurement —
 it cannot know infill, layer height, wall count or the printer's speeds, and
@@ -241,11 +259,9 @@ of done says nothing should claim to know what the printer is doing, and a
 number someone might plan their afternoon around is the kind of claim it warns
 about.
 
-So a story in *Printing* says `on the bed` and nothing more.
-
-Bambuddy does slice every request now, so a real estimate exists on its side.
-Surfacing it means reading it off the sliced file or the queue entry during
-the sync, and it has not been done yet.
+So no estimate was ever invented. Now that the app slices every request
+itself, the slicer's own print time and filament weight come back with the
+slice, and the ticket shows those: a measurement, not a guess.
 
 ## The API, and why there is a service layer
 

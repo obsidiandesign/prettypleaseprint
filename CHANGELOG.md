@@ -267,6 +267,23 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Changed
 
+- **Requests are sliced and queued directly, not through a Slicer Pipeline
+  run.** A pipeline run can't carry a MakerWorld designer's own settings,
+  slices only plate 1, and loads a fixed number of filaments, which crashes
+  Bambu Studio ("Flush volumes matrix do not match to the correct size!")
+  on a multi-colour model with fewer slots. The app now slices each request
+  itself, from one pipeline used as a settings template
+  (`BAMBUDDY_PIPELINE_ID`), adding per model: the designer's settings (what
+  Bambuddy's own "use the designer's settings" applies, minus the
+  printer-coupled and preset-defining ones), every plate, one filament per
+  colour slot, and the colours picked. Each plate and copy is queued as its
+  own entry, **created waiting for a person**, so there is no longer a race
+  to switch a pipeline's auto-starting entry to manual start. Status follows
+  all of a ticket's entries (one batch when there are copies), and the
+  ticket shows the slicer's real print time and filament weight. Tickets
+  already sliced through a pipeline finish the old way. `BAMBUDDY_PIPELINES`
+  is no longer needed (its first id serves as the template if set).
+
 - **The tip jar is an optional module, off by default.** A switch at the top of
   `/admin/benefits` turns it on or off, stored in a new one-row `app_settings`
   table and audited (`tipjar.enabled` / `tipjar.disabled`). On, the intake form
@@ -378,15 +395,6 @@ Notable changes. Every entry names a released version; deployments pin
   and orphan `v0.1.0` in exchange for tidiness.
 
 ### Fixed
-
-- **2- and 3-colour models no longer crash the slicer.** A Slicer Pipeline
-  loads a fixed number of filament presets, and Bambu Studio aborts ("Flush
-  volumes matrix do not match to the correct size!") when that is more than
-  a multi-colour model defines, so the one 4-preset pipeline couldn't slice
-  them. `BAMBUDDY_PIPELINES` lists one pipeline per filament count; intake
-  reads the model's colours before slicing and picks the one that fits, and
-  flags a model nothing fits rather than starting a run that would crash.
-  `BAMBUDDY_PIPELINE_ID` alone still works.
 
 - **A failed slice now fails the ticket.** Bambuddy can leave a run whose
   slice failed as `in_progress` indefinitely (error message and completion
