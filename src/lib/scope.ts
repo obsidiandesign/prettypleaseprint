@@ -86,8 +86,11 @@ export type QueueCounts = {
 export function queueOutcome(c: QueueCounts): { status: StoryStatus; note: string | null } {
   const didnt = c.failed + c.cancelled + c.skipped;
   const total = c.pending + c.printing + c.completed + didnt;
+  // Deleted from Bambuddy's queue before any finished: the owner's doing,
+  // like a cancel. (A finished ticket is never polled again, so clearing
+  // old entries out of the queue doesn't land here.)
   if (total === 0) {
-    return { status: "Failed", note: "Its print queue entries were removed in Bambuddy." };
+    return { status: "Declined", note: "Its print queue entries were removed in Bambuddy." };
   }
   if (c.printing > 0 || (c.pending > 0 && c.completed > 0)) {
     return { status: "Printing", note: c.completed > 0 ? `${c.completed} of ${total} printed so far.` : null };
@@ -97,6 +100,15 @@ export function queueOutcome(c: QueueCounts): { status: StoryStatus; note: strin
     return {
       status: "Done",
       note: didnt > 0 ? `${c.completed} of ${total} printed; ${didnt} didn't (failed or cancelled in Bambuddy).` : null,
+    };
+  }
+  // Nothing printed, and nothing failed: every entry was cancelled (or
+  // skipped) in Bambuddy, which here only ever means the printer owner said
+  // no — the same as declining it by hand.
+  if (c.failed === 0) {
+    return {
+      status: "Declined",
+      note: `${total === 1 ? "Cancelled" : `All ${total} prints were cancelled`} in Bambuddy by the printer owner.`,
     };
   }
   return {
@@ -167,9 +179,10 @@ export type BambuddyProgress = {
  * every open story, and it needs to be cheap and exercised directly by
  * tests rather than re-implemented per caller.
  *
- * `Declined` is deliberately not derivable here — it's the one status a
- * person still sets by hand, and only before any Bambuddy state exists.
- * `deriveStatus` is never called for a story that's already `Declined`.
+ * A cancelled (or skipped) entry or run is `Declined`, not `Failed`: in
+ * this app a cancel only ever comes from the printer owner in Bambuddy, and
+ * it means the same as declining by hand. `deriveStatus` is never called for
+ * a story that's already `Declined`, since that is terminal.
  */
 export function deriveStatus(progress: BambuddyProgress): StoryStatus {
   switch (progress.queueItemStatus) {
@@ -180,9 +193,10 @@ export function deriveStatus(progress: BambuddyProgress): StoryStatus {
     case "completed":
       return "Done";
     case "failed":
+      return "Failed";
     case "cancelled":
     case "skipped":
-      return "Failed";
+      return "Declined";
   }
 
   switch (progress.pipelineRunStatus) {
@@ -194,8 +208,9 @@ export function deriveStatus(progress: BambuddyProgress): StoryStatus {
       return "Slicing";
     case "failed":
     case "partial_failure":
-    case "cancelled":
       return "Failed";
+    case "cancelled":
+      return "Declined";
     case "queued":
     case "slicing":
     case "dispatching":

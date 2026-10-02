@@ -173,7 +173,8 @@ still pending. Bambuddy refuses that PATCH with `400` once an entry has left
 
 ### Status is derived, not clicked
 
-Every status but `Declined` comes from Bambuddy:
+Every status comes from Bambuddy, except a decline made in this app before
+a request reaches it:
 
 | Bambuddy | Ticket |
 | --- | --- |
@@ -182,7 +183,8 @@ Every status but `Declined` comes from Bambuddy:
 | entries all waiting | `Ready`, waiting for the owner to start them in Bambuddy |
 | any entry printing, or some printed and some still waiting | `Printing` |
 | all finished, at least one printed | `Done`, noting any that didn't print |
-| none printed (failed, cancelled, skipped, or removed) | `Failed` |
+| none printed, every entry cancelled, skipped or removed in Bambuddy | `Declined`: here a cancel only ever means the printer owner said no |
+| none printed, and at least one failed | `Failed` |
 
 `queueOutcome` in `scope.ts` turns a batch's counts, or each entry's status,
 into that. With a single entry, its own words are kept: why it failed, or why

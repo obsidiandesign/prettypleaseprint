@@ -267,6 +267,14 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Changed
 
+- **Cancelling a request in Bambuddy declines it.** A ticket whose every
+  print-queue entry was cancelled, skipped or removed in Bambuddy, with
+  nothing printed or failed, now reads `Declined` ("All 4 prints were
+  cancelled in Bambuddy by the printer owner."), not `Failed`: in this app
+  only the printer owner cancels, so it means the same as declining by
+  hand. A real failure is still `Failed`; a partly printed order is still
+  `Done` with a note.
+
 - **Requests are sliced and queued directly, not through a Slicer Pipeline
   run.** A pipeline run can't carry a MakerWorld designer's own settings,
   slices only plate 1, and loads a fixed number of filaments, which crashes
