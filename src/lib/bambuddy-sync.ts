@@ -10,6 +10,7 @@ import {
   filamentCountFor,
   isTerminal,
   queueOutcome,
+  statusLabel,
   storyRef,
   type QueueCounts,
 } from "@/lib/scope";
@@ -459,6 +460,143 @@ const INTAKE_SLICE_POLL_MS = 3000;
 
 const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
 
+/** What intake and prep read about a story. */
+const INTAKE_FIELDS = {
+  id: true, title: true, modelUrl: true, status: true, uploaderId: true,
+  quantity: true, libraryFileId: true, libraryFileKind: true, errorMessage: true,
+  spoolId: true, material: true, colorName: true, colorHex: true,
+  sliceJobId: true, pipelineRunId: true, queueBatchId: true, queueItemIds: true,
+} as const;
+
+type IntakeStory = Prisma.StoryGetPayload<{ select: typeof INTAKE_FIELDS }>;
+
+/** Whether a story's model already reached Bambuddy's slicer or queue. */
+function handedOff(story: { sliceJobId: number | null; pipelineRunId: number | null; queueBatchId: number | null; queueItemIds: number[] }) {
+  return story.sliceJobId !== null || story.pipelineRunId !== null || story.queueBatchId !== null || story.queueItemIds.length > 0;
+}
+
+/** Plates to queue separately: none for a lone plate 1, else each plate. */
+function platesToQueue(indices: number[]): number[] {
+  return indices.length > 1 || (indices.length === 1 && indices[0] !== 1) ? indices : [];
+}
+
+/**
+ * Carry on with a model that is already in Bambuddy's library — an upload, a
+ * file the printer owner prepared, or a re-print of either — according to
+ * what it is (`libraryFileKind`):
+ *
+ *   - "stl": geometry with no settings, so it waits for the printer owner to
+ *     prepare it in Bambu Studio (`Prep`).
+ *   - "gcode.3mf": already sliced, by the owner, for this printer: queued
+ *     exactly as it is, every entry waiting for a person.
+ *   - "3mf": a project, sliced like a MakerWorld model (its own settings,
+ *     every plate, the ticket's colours). Returns the handoff to wait on.
+ *
+ * The caller holds the story's claim; every path that ends here releases it.
+ */
+async function fromLibraryFile(
+  story: IntakeStory,
+  announcedFrom: StoryStatus,
+): Promise<{ jobId: number; printPlates: number[] } | null> {
+  const libraryFileId = story.libraryFileId!;
+  const asStory = { ...story, status: announcedFrom };
+
+  if (story.libraryFileKind === "stl") {
+    await applyStatusChange(asStory, "Prep", { errorMessage: null, intakeStartedAt: null }, announcedFrom);
+    return null;
+  }
+
+  if (story.libraryFileKind === "gcode.3mf") {
+    const plates = await getLibraryPlates(libraryFileId).catch(() => null);
+    const indices = (plates?.plates ?? []).map((p) => p.index).filter((n) => Number.isInteger(n) && n > 0);
+    await queueSliced(
+      asStory,
+      { library_file_id: libraryFileId, print_time_seconds: 0, filament_used_g: 0 },
+      platesToQueue(indices),
+      announcedFrom,
+    );
+    return null;
+  }
+
+  let slots: FilamentRequirement[] = [];
+  try {
+    slots = (await getFilamentSlots(libraryFileId)).used;
+  } catch (error) {
+    console.error(`[intake] ${storyRef(story.id)}: couldn't read the model's colours`, error);
+  }
+  await recordFilaments(story, slots);
+
+  const slice = await startSlice(story.id, libraryFileId);
+  const moved = await db.story.updateMany({
+    where: { id: story.id, status: announcedFrom },
+    data: { sliceJobId: slice.jobId, printPlates: slice.printPlates, status: "Slicing", errorMessage: null },
+  });
+  if (moved.count === 0) {
+    console.error(`[intake] ${storyRef(story.id)} moved on mid-handoff; slice job ${slice.jobId} is unowned`);
+    return null;
+  }
+  return slice;
+}
+
+/**
+ * Wait briefly for a slice, since a small model is done in seconds and the
+ * person is still on the page; anything slower is `syncStory`'s, on its next
+ * pass. Never throws: the handoff is already saved.
+ */
+async function awaitSliceBriefly(
+  asSlicing: AnnounceableStory,
+  handoff: { jobId: number; printPlates: number[] },
+  announcedFrom: StoryStatus,
+): Promise<void> {
+  try {
+    for (let i = 0; i < INTAKE_SLICE_POLLS; i++) {
+      await sleep(INTAKE_SLICE_POLL_MS);
+      const job = await getSliceJob(handoff.jobId);
+      if (!job) break; // forgotten already: sync slices it again
+      if (job.status === "completed" && job.result) {
+        await queueSliced(asSlicing, job.result, handoff.printPlates, announcedFrom);
+        return;
+      }
+      if (job.status === "failed") {
+        await sliceFailed(asSlicing, job, announcedFrom);
+        return;
+      }
+    }
+    await applyStatusChange(asSlicing, "Slicing", { intakeStartedAt: null }, announcedFrom);
+  } catch (error) {
+    console.error(`[intake] ${storyRef(asSlicing.id)}: waiting on slice job ${handoff.jobId} failed; sync will continue`, error);
+    await db.story
+      .update({ where: { id: asSlicing.id }, data: { intakeStartedAt: null } })
+      .catch(() => {}); // row withdrawn, or the DB is down — the lease expires on its own
+  }
+}
+
+/**
+ * Carry on with a ticket in `Prep` once the printer owner has attached the
+ * prepared file (src/lib/stories.ts sets `libraryFileId`/`libraryFileKind`
+ * first): queue it as sliced, or slice the project. Called in the owner's
+ * request. A failure is put on the ticket for the owner to see and retry —
+ * the ticket stays in `Prep`.
+ */
+export async function processPreparedFile(storyId: number): Promise<void> {
+  const story = await db.story.findUnique({ where: { id: storyId }, select: INTAKE_FIELDS });
+  if (!story || story.status !== "Prep" || handedOff(story) || story.libraryFileId === null) return;
+  if (!(await claim(story.id))) return;
+
+  let handoff: { jobId: number; printPlates: number[] } | null;
+  try {
+    handoff = await fromLibraryFile(story, "Prep");
+  } catch (error) {
+    const message =
+      error instanceof IntakeProblem || error instanceof BambuddyCloudExpiredError
+        ? error instanceof IntakeProblem && error.adminDetail ? error.adminDetail : error.message
+        : `Bambuddy couldn't take the prepared file: ${error instanceof Error ? error.message : String(error)}`;
+    await db.story.update({ where: { id: story.id }, data: { errorMessage: message, intakeStartedAt: null } });
+    return;
+  }
+  if (handoff) await awaitSliceBriefly({ ...story, status: "Slicing" }, handoff, "Prep");
+}
+
 /**
  * Send a request to Bambuddy for the first time: resolve, import, read its
  * colours, and start slicing it directly (`planSlice`, from the template
@@ -485,12 +623,12 @@ export async function processIntake(storyId: number): Promise<void> {
   const story = await db.story.findUnique({
     where: { id: storyId },
     select: {
-      id: true, title: true, modelUrl: true, status: true, uploaderId: true,
-      quantity: true, libraryFileId: true, errorMessage: true,
-      spoolId: true, material: true, colorName: true, colorHex: true,
+      ...INTAKE_FIELDS,
     },
   });
-  if (!story || story.status !== "Requested" || story.libraryFileId) return;
+  // Already handed to Bambuddy: sliced, slicing, or queued. (An upload has a
+  // library file from the start, so that alone doesn't mean handed off.)
+  if (!story || story.status !== "Requested" || handedOff(story)) return;
 
   // The check above is only a snapshot, and nothing is written until the
   // slice has started — long enough for a cron tick to start a second import
@@ -500,7 +638,9 @@ export async function processIntake(storyId: number): Promise<void> {
     where: {
       id: story.id,
       status: "Requested",
-      libraryFileId: null,
+      sliceJobId: null,
+      pipelineRunId: null,
+      queueBatchId: null,
       ...intakeNotRunning(now),
     },
     data: { intakeStartedAt: now },
@@ -511,76 +651,85 @@ export async function processIntake(storyId: number): Promise<void> {
   let slots: FilamentRequirement[] = [];
   let profileFellBack = false;
   try {
-    const resolved = await resolveMakerWorldUrl(story.modelUrl);
+    if (story.libraryFileId !== null && story.libraryFileKind !== null) {
+      // An upload, a prepared file, or a re-print of either: already in
+      // Bambuddy's library, so no MakerWorld steps.
+      const next = await fromLibraryFile(story, "Requested");
+      if (!next) return;
+      handoff = next;
+    } else {
+      const resolved = await resolveMakerWorldUrl(story.modelUrl);
 
-    let imported;
-    try {
+      let imported;
       try {
-        imported = await importMakerWorldModel({
-          model_id: resolved.model_id,
-          profile_id: resolved.profile_id,
-        });
-      } catch (error) {
-        // The link named a print profile (a `?…`/`#profileId-…` part) that
-        // Bambu won't serve. Confirmed live: a share link's profile answered
-        // 502 "Bambu Lab API unexpected status 400 for profile …", while the
-        // same model with no profile imported fine. Fall back to the model's
-        // default profile once, and tell the requester below. A 401 is Bambu
-        // Cloud, which no retry fixes, so it goes straight through.
-        if (
-          resolved.profile_id == null ||
-          !(error instanceof BambuddyError) ||
-          error.status === 401
-        ) {
-          throw error;
+        try {
+          imported = await importMakerWorldModel({
+            model_id: resolved.model_id,
+            profile_id: resolved.profile_id,
+          });
+        } catch (error) {
+          // The link named a print profile (a `?…`/`#profileId-…` part) that
+          // Bambu won't serve. Confirmed live: a share link's profile answered
+          // 502 "Bambu Lab API unexpected status 400 for profile …", while the
+          // same model with no profile imported fine. Fall back to the model's
+          // default profile once, and tell the requester below. A 401 is Bambu
+          // Cloud, which no retry fixes, so it goes straight through.
+          if (
+            resolved.profile_id == null ||
+            !(error instanceof BambuddyError) ||
+            error.status === 401
+          ) {
+            throw error;
+          }
+          imported = await importMakerWorldModel({ model_id: resolved.model_id });
+          profileFellBack = true;
         }
-        imported = await importMakerWorldModel({ model_id: resolved.model_id });
-        profileFellBack = true;
+      } catch (error) {
+        // Confirmed live: a missing/expired Bambu Cloud link answers exactly
+        // this 401, even for a model already in the library — see
+        // BambuddyCloudExpiredError's own comment in bambuddy.ts.
+        if (error instanceof BambuddyError && error.status === 401) {
+          throw new BambuddyCloudExpiredError();
+        }
+        throw error;
       }
-    } catch (error) {
-      // Confirmed live: a missing/expired Bambu Cloud link answers exactly
-      // this 401, even for a model already in the library — see
-      // BambuddyCloudExpiredError's own comment in bambuddy.ts.
-      if (error instanceof BambuddyError && error.status === 401) {
-        throw new BambuddyCloudExpiredError();
+
+      // The model's colours, recorded before slicing so a re-slice (and the
+      // slice itself) uses the ticket's picks. Best-effort: a failed read just
+      // means no colour slots, and the slice falls back to the template's count.
+      try {
+        slots = (await getFilamentSlots(imported.library_file_id)).used;
+      } catch (error) {
+        console.error(`[intake] ${storyRef(story.id)}: couldn't read the model's colours`, error);
       }
-      throw error;
-    }
+      await recordFilaments(story, slots);
 
-    // The model's colours, recorded before slicing so a re-slice (and the
-    // slice itself) uses the ticket's picks. Best-effort: a failed read just
-    // means no colour slots, and the slice falls back to the template's count.
-    try {
-      slots = (await getFilamentSlots(imported.library_file_id)).used;
-    } catch (error) {
-      console.error(`[intake] ${storyRef(story.id)}: couldn't read the model's colours`, error);
-    }
-    await recordFilaments(story, slots);
+      const slice = await startSlice(story.id, imported.library_file_id);
 
-    const slice = await startSlice(story.id, imported.library_file_id);
-
-    // Record the handoff the moment the slice job exists. From here on the
-    // story belongs to `syncStory`: it queues the result, or slices again if
-    // Bambuddy forgets the job. Nothing can print from a slice the app never
-    // queued, so a lost job costs only a re-slice. Guarded on `Requested` as
-    // a backstop; decline and withdraw already refuse while the claim above
-    // is held.
-    const handedOff = await db.story.updateMany({
-      where: { id: story.id, status: "Requested" },
-      data: {
-        libraryFileId: imported.library_file_id,
-        sliceJobId: slice.jobId,
-        printPlates: slice.printPlates,
-        status: "Slicing",
-        resolvedTitle: resolvedTitleFrom(resolved),
-        errorMessage: null,
-      },
-    });
-    if (handedOff.count === 0) {
-      console.error(`[intake] ${storyRef(story.id)} left Requested mid-intake; slice job ${slice.jobId} is unowned`);
-      return;
+      // Record the handoff the moment the slice job exists. From here on the
+      // story belongs to `syncStory`: it queues the result, or slices again if
+      // Bambuddy forgets the job. Nothing can print from a slice the app never
+      // queued, so a lost job costs only a re-slice. Guarded on `Requested` as
+      // a backstop; decline and withdraw already refuse while the claim above
+      // is held.
+      const recorded = await db.story.updateMany({
+        where: { id: story.id, status: "Requested" },
+        data: {
+          libraryFileId: imported.library_file_id,
+          libraryFileKind: "3mf",
+          sliceJobId: slice.jobId,
+          printPlates: slice.printPlates,
+          status: "Slicing",
+          resolvedTitle: resolvedTitleFrom(resolved),
+          errorMessage: null,
+        },
+      });
+      if (recorded.count === 0) {
+        console.error(`[intake] ${storyRef(story.id)} left Requested mid-intake; slice job ${slice.jobId} is unowned`);
+        return;
+      }
+      handoff = slice;
     }
-    handoff = slice;
   } catch (error) {
     const message =
       error instanceof BambuddyCloudExpiredError || error instanceof IntakeProblem
@@ -625,33 +774,7 @@ export async function processIntake(storyId: number): Promise<void> {
     });
   }
 
-  // Past the handoff: wait briefly for the slice, since a small model is
-  // done in seconds and the requester is still on the form. Anything slower
-  // is `syncStory`'s, on its next pass.
-  const asSlicing = { ...story, status: "Slicing" as StoryStatus };
-  try {
-    for (let i = 0; i < INTAKE_SLICE_POLLS; i++) {
-      await sleep(INTAKE_SLICE_POLL_MS);
-      const job = await getSliceJob(handoff.jobId);
-      if (!job) break; // forgotten already: sync slices it again
-      if (job.status === "completed" && job.result) {
-        await queueSliced(asSlicing, job.result, handoff.printPlates, "Requested");
-        return;
-      }
-      if (job.status === "failed") {
-        await sliceFailed(asSlicing, job, "Requested");
-        return;
-      }
-    }
-    await applyStatusChange(asSlicing, "Slicing", { intakeStartedAt: null }, "Requested");
-  } catch (error) {
-    // The handoff is already saved, so the story is safe either way; at
-    // worst the requester hears about its status one sync pass later.
-    console.error(`[intake] ${storyRef(story.id)}: waiting on slice job ${handoff.jobId} failed; sync will continue`, error);
-    await db.story
-      .update({ where: { id: story.id }, data: { intakeStartedAt: null } })
-      .catch(() => {}); // row withdrawn, or the DB is down — the lease expires on its own
-  }
+  await awaitSliceBriefly({ ...story, status: "Slicing" }, handoff, "Requested");
 }
 
 /**
@@ -697,10 +820,13 @@ async function applyStatusChange(
   await notify({
     recipientId: story.uploaderId,
     storyId: story.id,
-    text: `“${story.title}” is now ${to}.`,
+    text: `“${story.title}” is now ${statusLabel(to)}.`,
   });
   if (to === "Ready") {
     await notifyAdmin(`${ref} — “${story.title}” — sliced and ready to print.`, story.id);
+  }
+  if (to === "Prep") {
+    await notifyAdmin(`${ref} — “${story.title}” — needs prep: open it in Bambu Studio, then attach the result.`, story.id);
   }
 
   await record({
@@ -740,6 +866,7 @@ export async function syncStory(storyId: number): Promise<void> {
     },
   });
   if (!story || isTerminal(story.status)) return;
+  if (story.status === "Prep") return; // waiting on the printer owner, not on Bambuddy
 
   // `processIntake` may still be in its tight poll for this story. Securing
   // queue entries below stays on regardless — it's idempotent, and the one

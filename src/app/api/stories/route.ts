@@ -1,13 +1,16 @@
 import { z } from "zod";
 
 import { jsonBody, ok, storySerializer, withActor } from "@/lib/api";
+import type { Actor } from "@/lib/scope";
 import {
   CreateStorySchema,
+  CreateUploadSchema,
   LIST_LIMIT_DEFAULT,
   LIST_LIMIT_MAX,
   StatusSchema,
   StoryProblem,
   createStoryFromLink,
+  createStoryFromUpload,
   getStory,
   listStories,
 } from "@/lib/stories";
@@ -76,18 +79,49 @@ export const GET = withActor(async (request, actor) => {
 });
 
 /**
- * File a new request. A link, not a file — see `createStoryFromLink` for
- * why `spoolId` is the only thing that names a color.
+ * File a new request: JSON with a MakerWorld `modelUrl`, or
+ * `multipart/form-data` with a `file` (an STL or 3MF, up to 100 MB) and the
+ * same fields as form values plus an optional `sourceLink`. See
+ * `createStoryFromLink` / `createStoryFromUpload` for why `spoolId` is the
+ * only thing that names a color.
  */
 export const POST = withActor(async (request, actor) => {
-  const body = await jsonBody(request);
-  const parsed = CreateStorySchema.safeParse(body);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    throw new StoryProblem(400, `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid."}`);
-  }
-
-  const created = await createStoryFromLink(actor, parsed.data);
+  const created = (request.headers.get("content-type") ?? "").startsWith("multipart/form-data")
+    ? await fromUpload(request, actor)
+    : await fromLink(request, actor);
   const toResource = await storySerializer();
   return ok({ story: toResource(await getStory(actor, created.id)) }, 201);
 });
+
+function invalid(issue: { path: PropertyKey[]; message: string } | undefined): never {
+  throw new StoryProblem(400, `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid."}`);
+}
+
+async function fromLink(request: Request, actor: Actor) {
+  const parsed = CreateStorySchema.safeParse(await jsonBody(request));
+  if (!parsed.success) invalid(parsed.error.issues[0]);
+  return createStoryFromLink(actor, parsed.data);
+}
+
+async function fromUpload(request: Request, actor: Actor) {
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    throw new StoryProblem(400, "That upload didn't arrive whole — try again.");
+  }
+  const file = form.get("file");
+  if (!(file instanceof File)) throw new StoryProblem(400, "file: attach an .stl or .3mf file.");
+
+  // Form values are strings; empty ones mean "not given".
+  const fields = Object.fromEntries(
+    [...form.entries()].filter(([k, v]) => k !== "file" && typeof v === "string" && v !== ""),
+  );
+  const parsed = CreateUploadSchema.safeParse(fields);
+  if (!parsed.success) invalid(parsed.error.issues[0]);
+
+  return createStoryFromUpload(actor, parsed.data, {
+    name: file.name,
+    bytes: new Uint8Array(await file.arrayBuffer()),
+  });
+}

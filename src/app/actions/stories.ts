@@ -11,6 +11,7 @@ import {
   declineStory as decline,
   flagStory as flag,
   requeueStory as requeue,
+  sendToPrep as toPrep,
   setStoryColours as setColours,
   storyIdOr400,
   withdrawStory as withdraw,
@@ -193,4 +194,13 @@ export async function setStoryColours(formData: FormData): Promise<void> {
     if (error instanceof StoryProblem) back(`/story/${id}`, { toast: error.message });
     throw error;
   }
+}
+
+/** Send a ticket to "Needs prep" — the printer owner's rescue for a model. */
+export async function sendToPrep(formData: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  await run(formData, async (id) => {
+    const done = await toPrep(admin, id);
+    return { toast: `${done.ref} is waiting for you to prepare it` };
+  });
 }

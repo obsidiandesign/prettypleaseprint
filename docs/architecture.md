@@ -22,6 +22,35 @@ slice and queue, but cannot start, stop or otherwise touch a running print.
 `src/lib/bambuddy-sync.ts` is everything that happens without a person
 clicking.
 
+### Uploads, and "Needs prep"
+
+A request can also be a file, for models from sites Bambuddy can't fetch from
+yet (it plans Printables and Thingiverse providers; until then, this). The
+order form's **Upload a file** tab takes an `.stl` or `.3mf` up to 100 MB,
+checked against its bytes in `src/lib/model-files.ts`, and passes it straight
+into Bambuddy's library: the app keeps no copy, and if Bambuddy can't take
+it, nothing is created. `libraryFileKind` then decides what happens:
+
+- **A 3MF project** is sliced like a MakerWorld model: its own settings,
+  every plate, its colour slots.
+- **An STL** waits in `Prep`, shown as **Needs prep**. An STL carries
+  geometry and nothing else: no supports, orientation, plates or colours, and
+  guessing them blind prints badly. So the printer owner downloads it from
+  the ticket, prepares it in Bambu Studio, and attaches the result: a
+  **sliced** `.gcode.3mf` for the printer, queued exactly as sliced, or a
+  **project** `.3mf`, sliced here with its settings.
+- **A requester's already-sliced 3MF** is refused: Bambuddy's slicer can't
+  read one, and it was sliced for whatever printer its author had.
+
+`Prep` is also the rescue for any ticket Bambuddy's slicer can't handle: the
+owner can send a `Requested`, `Slicing` or `Failed` ticket there (once its
+model is in Bambuddy's library), fix it on the desktop and attach it back.
+That drops the ticket's slice job and any finished queue entries, so the sync
+stops following them. A ticket in `Prep` holds nothing in the print queue, so
+it can still be declined or withdrawn. **Print again** reuses the uploaded or
+prepared file from Bambuddy's library, so nothing is uploaded or prepared
+twice.
+
 ### What the form takes, and why
 
 - **A MakerWorld model page**, checked on the server (`isMakerWorldModelUrl`).
@@ -454,6 +483,8 @@ src/lib/
   audit.ts               the append-only trail
   bambuddy.ts            the Bambuddy client — resolve, import, slice, queue, spools
   bambuddy-sync.ts       intake handoff and status sync; nothing here takes an Actor
+  model-files.ts         what an uploaded file is, against its bytes (STL, 3MF, sliced)
+  upload-client.ts       browser-side multipart upload with progress
   catalog.ts             quantity presets and shared formatting
   stories.ts             every operation on a ticket — the rules, once
   notifications.ts       the Activity feed, scoped by recipient
@@ -464,7 +495,7 @@ src/lib/
   settings.ts            instance-wide switches, one row — the tip jar
 src/app/
   board/                 the kanban backlog, scoped per role
-  upload/                the intake form: link, live spool picker, wish
+  upload/                the intake form: link or file, live spool picker, wish
   story/[id]/            story detail (read half)
   queue/                 the owner's view: needs a look, ready to print
   api/stories/           the tickets, intake, decline, flag, the conversation

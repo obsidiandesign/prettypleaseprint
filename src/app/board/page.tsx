@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { db } from "@/lib/db";
 import { requireUser, storyScope, printerName, BOARD } from "@/lib/authz";
+import { statusLabel } from "@/lib/scope";
 import { getSettings } from "@/lib/settings";
 import { AppHeader } from "@/components/app-header";
 import { StoryCard, type CardStory } from "@/components/story-card";
@@ -24,6 +25,7 @@ export const dynamic = "force-dynamic";
  */
 const RAIL: Record<string, { bar: string; note: string }> = {
   Requested: { bar: "bg-chrome", note: "just sent" },
+  Prep: { bar: "bg-cream-3", note: "being prepared by hand" },
   Slicing: { bar: "bg-aqua", note: "Bambuddy is on it" },
   Ready: { bar: "bg-mint-wash", note: "sliced, waiting to be started" },
   Printing: { bar: "bg-sun", note: "on the bed" },
@@ -99,7 +101,7 @@ export default async function BoardPage({
                     className={`layers flex items-center justify-between border-b-[3px] border-ink ${rail.bar} px-[13.2px] py-[8px]`}
                   >
                     <h2 className="m-0 font-mono text-[12.5px] font-bold uppercase tracking-[0.1em] text-ink">
-                      {status}
+                      {statusLabel(status)}
                     </h2>
                     <span className="rounded-chip border-2 border-ink bg-porcelain px-[7px] font-mono text-[11.5px] font-bold tabular-nums text-ink">
                       {column.length}

@@ -94,8 +94,10 @@ const STORY_SCHEMA = {
       enum: [...ALL_STATUSES],
       description:
         "Requested -> Slicing -> Ready -> Printing -> Done is the happy path, " +
-        "derived from Bambuddy's own state, not moved by hand. Failed and " +
-        "Declined are branches off it, not steps on it.",
+        "derived from Bambuddy's own state, not moved by hand. `Prep` (shown " +
+        "as \"Needs prep\") sits before Slicing for a model the printer owner " +
+        "prepares in Bambu Studio — every uploaded STL, and any ticket sent " +
+        "there. Failed and Declined are branches off it, not steps on it.",
     },
     flagged: { type: "boolean" },
     flagReason: { type: ["string", "null"] },
@@ -105,8 +107,10 @@ const STORY_SCHEMA = {
       type: "object",
       description: "The pasted link, and what Bambuddy resolved it to.",
       properties: {
-        url: { type: "string", examples: ["https://makerworld.com/en/models/123456"] },
+        url: { type: "string", description: "The MakerWorld link; for an upload, its optional source page, or \"\".", examples: ["https://makerworld.com/en/models/123456"] },
         resolvedTitle: { type: ["string", "null"], examples: ["Cable clip, 4 mm"] },
+        uploadedFilename: { type: ["string", "null"], description: "The uploaded file's name; null for a MakerWorld link.", examples: ["bracket-v2.stl"] },
+        preparedFilename: { type: ["string", "null"], description: "The file the printer owner attached after preparing it.", examples: ["bracket-v2.gcode.3mf"] },
       },
     },
     material: {
@@ -491,9 +495,16 @@ export async function buildOpenApiDocument() {
 
         post: {
           tags: ["stories"],
-          summary: "File a request from a model link",
+          summary: "File a request from a model link, or an uploaded file",
           description:
-            "A link, not a file — there is no multipart endpoint any more. " +
+            "Either JSON with a MakerWorld `modelUrl`, or `multipart/form-data` " +
+            "with a `file` (an `.stl` or `.3mf`, up to 100 MB, checked against " +
+            "its bytes; an already-sliced `.gcode.3mf` is refused) plus the same " +
+            "fields as form values and an optional `sourceLink` (where the " +
+            "model came from, shown for reference). An uploaded file goes " +
+            "straight into Bambuddy's library — nothing is kept here — and, if " +
+            "Bambuddy can't take it, nothing is created. An STL then waits in " +
+            "`Prep` for the printer owner; a 3MF project is sliced.\n\n" +
             "`spoolId` is the only way to name a colour: it's resolved against " +
             "live Bambuddy inventory server-side, and `material`/`color` on " +
             "the response are snapshotted from that spool at this moment, not " +
@@ -517,6 +528,22 @@ export async function buildOpenApiDocument() {
                   modelUrl: "https://makerworld.com/en/models/123456",
                   spoolId: 15,
                   quantity: 1,
+                },
+              },
+              "multipart/form-data": {
+                schema: {
+                  type: "object",
+                  required: ["file", "title", "spoolId"],
+                  properties: {
+                    file: { type: "string", format: "binary", description: "An .stl or .3mf, up to 100 MB." },
+                    title: { type: "string" },
+                    sourceLink: { type: "string", description: "Optional: the model's page, e.g. on Printables." },
+                    spoolId: { type: "integer" },
+                    quantity: { type: "integer" },
+                    note: { type: "string" },
+                    neededBy: { type: "string", format: "date" },
+                    tip: { type: "string" },
+                  },
                 },
               },
             },
@@ -606,6 +633,80 @@ export async function buildOpenApiDocument() {
             "403": errorResponse("Not the printer owner, or past the point where declining is honest."),
             "404": errorResponse("No such ticket."),
             "409": errorResponse("Being handed to Bambuddy right now. Re-read the ticket: once intake lands it in Slicing, declining no longer applies (403); only if intake failed and left it Requested can you decline it."),
+            ...COMMON_ERRORS,
+          },
+        },
+      },
+
+      "/api/stories/{id}/prep": {
+        post: {
+          tags: ["queue"],
+          summary: "Send to Needs prep",
+          description:
+            "The printer owner takes the model to prepare in Bambu Studio — the " +
+            "rescue for one Bambuddy's slicer can't handle. From Requested, " +
+            "Slicing or Failed, once the model is in Bambuddy's library; never " +
+            "with entries waiting or printing in the queue.",
+          parameters: [storyIdParam],
+          responses: {
+            "200": storyResponse("Now in Prep; the requester was told."),
+            "403": errorResponse("Only the printer owner sends a ticket to prep."),
+            "404": errorResponse("No such ticket."),
+            "409": errorResponse("Past the point where it can go to prep, its model never reached Bambuddy, or intake is handing it over right now."),
+            ...COMMON_ERRORS,
+          },
+        },
+      },
+
+      "/api/stories/{id}/prepared": {
+        post: {
+          tags: ["queue"],
+          summary: "Attach the prepared file",
+          description:
+            "For a ticket in Prep: the file prepared in Bambu Studio. A sliced " +
+            "`.gcode.3mf` (for this printer) is queued exactly as it is, every " +
+            "entry waiting for a person; a project `.3mf` is sliced with its own " +
+            "settings. The ticket comes back `Ready`, `Slicing`, or still `Prep` " +
+            "with an `errorMessage` if Bambuddy couldn't take it.",
+          parameters: [storyIdParam],
+          requestBody: {
+            required: true,
+            content: {
+              "multipart/form-data": {
+                schema: {
+                  type: "object",
+                  required: ["file"],
+                  properties: { file: { type: "string", format: "binary", description: "A .3mf: sliced or a project. Up to 100 MB." } },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": storyResponse("Attached, and handed on."),
+            "400": errorResponse("Not a .3mf (or not really one), empty, too big, or Bambuddy refused it."),
+            "403": errorResponse("Only the printer owner attaches a prepared file."),
+            "404": errorResponse("No such ticket."),
+            "409": errorResponse("The ticket isn't waiting for prep."),
+            "503": errorResponse("Bambuddy's library couldn't be reached."),
+            ...COMMON_ERRORS,
+          },
+        },
+      },
+
+      "/api/stories/{id}/file": {
+        get: {
+          tags: ["queue"],
+          summary: "Download the model",
+          description:
+            "The model file behind a ticket, streamed from Bambuddy's library: " +
+            "the prepared file if one was attached, else the original upload " +
+            "or MakerWorld import. For opening it in Bambu Studio.",
+          parameters: [storyIdParam],
+          responses: {
+            "200": { description: "The file.", content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } } },
+            "403": errorResponse("Only the printer owner downloads a model."),
+            "404": errorResponse("No such ticket, or its file is no longer in Bambuddy's library."),
+            "503": errorResponse("Bambuddy's library couldn't be reached."),
             ...COMMON_ERRORS,
           },
         },

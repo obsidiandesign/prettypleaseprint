@@ -224,6 +224,45 @@ export async function getFilamentSlots(
   return { used, all: all.filaments, projectSlots: all.filaments.length };
 }
 
+/**
+ * Put an uploaded file into Bambuddy's library, thumbnail and all. This app
+ * keeps no copy: the bytes go straight through. Generous timeout, since the
+ * file can be up to 100 MB on a LAN.
+ */
+export async function uploadLibraryFile(
+  filename: string,
+  bytes: Uint8Array<ArrayBuffer>,
+): Promise<{ id: number; filename: string; file_type: string; file_size: number }> {
+  const form = new FormData();
+  form.append("file", new Blob([bytes]), filename);
+  const res = await fetch(`${baseUrl()}/api/v1/library/files?generate_stl_thumbnails=true`, {
+    method: "POST",
+    // No Content-Type: fetch sets the multipart boundary itself.
+    headers: { "X-API-Key": apiKey() },
+    body: form,
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => undefined);
+    throw new BambuddyError(res.status, `Bambuddy POST /api/v1/library/files -> ${res.status}`, body);
+  }
+  return res.json();
+}
+
+/**
+ * A library file's bytes, as a streaming response — for "Download original"
+ * on a ticket waiting for prep. `undefined` when Bambuddy no longer has it.
+ */
+export async function downloadLibraryFile(libraryFileId: number): Promise<Response | undefined> {
+  const res = await fetch(`${baseUrl()}/api/v1/library/files/${libraryFileId}/download`, {
+    headers: { "X-API-Key": apiKey() },
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (res.status === 404) return undefined;
+  if (!res.ok) throw new BambuddyError(res.status, `Bambuddy GET library file ${libraryFileId} -> ${res.status}`);
+  return res;
+}
+
 /** One setting the designer changed from the stock process preset. */
 export type DesignOverride = {
   key: string;

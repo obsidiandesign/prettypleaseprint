@@ -11,13 +11,15 @@ import {
   AuthzError,
   COLOUR_EDITABLE,
   assertDecline,
+  statusLabel,
   storyRef,
   storyScope,
   type Actor,
 } from "@/lib/scope";
-import { isPla, listSpools } from "@/lib/bambuddy";
+import { BambuddyError, downloadLibraryFile, isPla, listSpools, uploadLibraryFile } from "@/lib/bambuddy";
 import { activeBenefitLabels } from "@/lib/benefits";
-import { intakeNotRunning, processIntake } from "@/lib/bambuddy-sync";
+import { intakeNotRunning, processIntake, processPreparedFile } from "@/lib/bambuddy-sync";
+import { checkModelFile } from "@/lib/model-files";
 import { QuantitySchema } from "@/lib/catalog";
 import { getSettings } from "@/lib/settings";
 
@@ -161,6 +163,27 @@ export const CreateStorySchema = z.object({
 export type CreateStoryInput = z.infer<typeof CreateStorySchema>;
 
 /**
+ * A request made by uploading a file instead of pasting a link: the same
+ * wish, plus an optional link to where the model came from (any http(s)
+ * page — Printables, Thingiverse, …), shown on the ticket for reference only.
+ * The file itself is checked against its bytes in `createStoryFromUpload`.
+ */
+export const CreateUploadSchema = CreateStorySchema.omit({ modelUrl: true }).extend({
+  sourceLink: z
+    .string()
+    .trim()
+    .max(2000, "That link is too long.")
+    .refine((v) => v === "" || isHttpUrl(v), "That doesn't look like a web link — paste the page's https:// address.")
+    .optional()
+    .default(""),
+});
+
+export type CreateUploadInput = z.infer<typeof CreateUploadSchema>;
+
+/** An uploaded file as the service sees it: its name and its bytes. */
+export type UploadedFile = { name: string; bytes: Uint8Array<ArrayBuffer> };
+
+/**
  * A change to a ticket's colours: a spool per slot, or `null` for "printer's
  * choice". Slots left out stay as they are. Spools are looked up in live
  * inventory in `setStoryColours`, the same way the order form's colour is.
@@ -236,6 +259,8 @@ export const STORY_FIELDS = {
   neededBy: true,
   modelUrl: true,
   resolvedTitle: true,
+  sourceFilename: true,
+  preparedFilename: true,
   spoolId: true,
   material: true,
   colorName: true,
@@ -449,7 +474,8 @@ export async function declineStory(actor: Actor, id: number) {
   // it was read, and once intake starts a pipeline run Bambuddy can't recall
   // it. Declining under it would be overwritten, and the print would go on.
   const declined = await db.story.updateMany({
-    where: { id: story.id, status: "Requested", ...intakeNotRunning() },
+    // Requested or Prep, as assertDecline allowed — whichever it still is.
+    where: { id: story.id, status: story.status, ...intakeNotRunning() },
     // A leftover intake error ("…it'll retry automatically") would read as a
     // promise on a ticket that is now closed; nothing retries a Declined one.
     data: { status: "Declined", errorMessage: null },
@@ -560,6 +586,138 @@ export async function clearFlag(actor: Actor, id: number) {
   };
 }
 
+/**
+ * Send a ticket to "Needs prep": the printer owner will open the model in
+ * Bambu Studio, fix whatever it needs (supports, orientation, plates), and
+ * attach the result. The rescue for a model Bambuddy's slicer can't handle.
+ *
+ * From `Requested` (intake stuck), `Slicing`, or `Failed` — never from a
+ * ticket with entries waiting or printing in the queue (cancel those in
+ * Bambuddy first). The model must already be in Bambuddy's library, or there
+ * is nothing to download. Conditional on intake not holding the story, like
+ * decline, and it drops the slice job and any finished queue entries, so the
+ * sync stops following them.
+ */
+export async function sendToPrep(actor: Actor, id: number) {
+  const story = await loadForAdmin(actor, id);
+  if (!["Requested", "Slicing", "Failed"].includes(story.status)) {
+    throw problem(409, `${storyRef(story.id)} is ${statusLabel(story.status)} — only a ticket that hasn't reached the print queue can go to prep.`);
+  }
+  if (story.libraryFileId === null) {
+    throw problem(409, "That model never reached Bambuddy, so there's nothing to prepare yet.");
+  }
+  // A pipeline run (from before direct slicing) may still dispatch a queue
+  // entry; following it to the end is the only safe thing to do with one.
+  if (story.pipelineRunId !== null && story.status !== "Failed") {
+    throw problem(409, "That ticket is still in a Slicer Pipeline run — wait for it to finish.");
+  }
+
+  const moved = await db.story.updateMany({
+    where: { id: story.id, status: story.status, ...intakeNotRunning() },
+    data: {
+      status: "Prep",
+      libraryFileKind: story.libraryFileKind ?? "3mf",
+      sliceJobId: null,
+      pipelineRunId: null,
+      printPlates: [],
+      queueBatchId: null,
+      queueItemIds: [],
+      queueItemId: null,
+      errorMessage: null,
+    },
+  });
+  if (moved.count === 0) throw handingOff(story.id);
+
+  await notify({
+    recipientId: story.uploaderId,
+    storyId: story.id,
+    text: `“${story.title}” is being prepared by ${firstName(actor.name)} before it prints.`,
+  });
+  await record({
+    action: "story.sent_to_prep",
+    actor,
+    subject: storyRef(story.id),
+    detail: { title: story.title, from: story.status },
+  });
+
+  refresh(story.id);
+  return { id: story.id, ref: storyRef(story.id), title: story.title };
+}
+
+/**
+ * The model file behind a ticket, from Bambuddy's library, for the printer
+ * owner to open in Bambu Studio: the prepared file if one was attached, else
+ * the original (an upload, or the MakerWorld import). Streams; nothing is
+ * kept here.
+ */
+export async function modelFileFor(actor: Actor, id: number) {
+  const story = await loadForAdmin(actor, id);
+  if (story.libraryFileId === null) {
+    throw problem(404, "That model never reached Bambuddy, so there's no file to download.");
+  }
+  let res: Response | undefined;
+  try {
+    res = await downloadLibraryFile(story.libraryFileId);
+  } catch (error) {
+    console.error("[download] Bambuddy refused", error);
+    throw problem(503, "Can't reach the printer's library right now — try again in a minute.");
+  }
+  if (!res?.body) throw problem(404, "That file is no longer in Bambuddy's library.");
+  const ext = story.libraryFileKind === "stl" ? ".stl" : story.libraryFileKind === "gcode.3mf" ? ".gcode.3mf" : ".3mf";
+  return {
+    body: res.body,
+    filename: story.preparedFilename ?? story.sourceFilename ?? `${storyRef(story.id)}${ext}`,
+    size: res.headers.get("content-length"),
+  };
+}
+
+/**
+ * Attach the file the printer owner prepared in Bambu Studio to a ticket in
+ * "Needs prep", and carry on: a sliced `.gcode.3mf` is queued exactly as it
+ * is; a project `.3mf` is sliced with its embedded settings. The file goes
+ * straight into Bambuddy's library, like an upload.
+ */
+export async function attachPreparedFile(actor: Actor, id: number, file: UploadedFile) {
+  const story = await loadForAdmin(actor, id);
+  if (story.status !== "Prep") {
+    throw problem(409, `${storyRef(story.id)} isn't waiting for prep.`);
+  }
+  const checked = checkModelFile(file.name, Buffer.from(file.bytes.buffer, file.bytes.byteOffset, file.bytes.byteLength), { sliced: true });
+  if (!checked.ok) throw problem(400, checked.reason);
+  if (checked.kind === "stl") {
+    throw problem(400, "Attach the prepared .3mf — a project, or sliced for this printer — not an STL.");
+  }
+
+  const uploaded = await toLibrary(checked.filename, file.bytes);
+  await db.story.update({
+    where: { id: story.id },
+    data: {
+      libraryFileId: uploaded.id,
+      libraryFileKind: checked.kind,
+      preparedFilename: checked.filename,
+      errorMessage: null,
+    },
+  });
+  await record({
+    action: "story.prepared",
+    actor,
+    subject: storyRef(story.id),
+    detail: { title: story.title, file: checked.filename, kind: checked.kind },
+  });
+
+  await processPreparedFile(story.id);
+
+  refresh(story.id);
+  const after = await db.story.findUnique({ where: { id: story.id }, select: { status: true, errorMessage: true } });
+  return {
+    id: story.id,
+    ref: storyRef(story.id),
+    title: story.title,
+    status: after?.status ?? story.status,
+    errorMessage: after?.errorMessage ?? null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The requester's action
 // ---------------------------------------------------------------------------
@@ -582,6 +740,125 @@ export async function clearFlag(actor: Actor, id: number) {
  * (see src/lib/bambuddy-sync.ts) rather than making the requester resubmit.
  */
 export async function createStoryFromLink(actor: Actor, input: CreateStoryInput) {
+  const { tip, spool } = await checkWish(input);
+
+  const story = await db.story.create({
+    data: {
+      title: input.title,
+      uploaderId: actor.id,
+      status: "Requested",
+      modelUrl: input.modelUrl,
+      quantity: input.quantity,
+      neededBy: input.neededBy ?? null,
+      note: input.note,
+      spoolId: spool.id,
+      material: spool.material,
+      colorName: spool.color_name ?? "Unnamed",
+      colorHex: spool.rgba,
+      tip,
+    },
+    select: { id: true, title: true },
+  });
+
+  await record({
+    action: "story.created",
+    actor,
+    subject: storyRef(story.id),
+    detail: { title: story.title, modelUrl: input.modelUrl, spoolId: spool.id },
+  });
+  await tellOwnerAboutRequest(actor, story);
+
+  await processIntake(story.id);
+
+  refresh(story.id);
+  return { id: story.id, ref: storyRef(story.id), title: story.title };
+}
+
+/**
+ * File a new request from an uploaded STL or 3MF — for models from sites
+ * other than MakerWorld, until Bambuddy can fetch from them itself.
+ *
+ * The file is checked against its bytes, then passed straight into
+ * Bambuddy's library; this app keeps no copy. If Bambuddy can't take it,
+ * nothing is created. Then intake carries on by kind (see `fromLibraryFile`
+ * in bambuddy-sync.ts): an STL waits for the printer owner to prepare it in
+ * Bambu Studio; a 3MF project is sliced. A requester can't upload an already
+ * sliced file — Bambuddy's slicer can't re-slice one.
+ */
+export async function createStoryFromUpload(actor: Actor, input: CreateUploadInput, file: UploadedFile) {
+  const checked = checkModelFile(file.name, Buffer.from(file.bytes.buffer, file.bytes.byteOffset, file.bytes.byteLength), { sliced: false });
+  if (!checked.ok) throw problem(400, checked.reason);
+
+  const { tip, spool } = await checkWish(input);
+  const uploaded = await toLibrary(checked.filename, file.bytes);
+
+  const story = await db.story.create({
+    data: {
+      title: input.title,
+      uploaderId: actor.id,
+      status: "Requested",
+      modelUrl: input.sourceLink,
+      sourceFilename: checked.filename,
+      libraryFileId: uploaded.id,
+      libraryFileKind: checked.kind,
+      quantity: input.quantity,
+      neededBy: input.neededBy ?? null,
+      note: input.note,
+      spoolId: spool.id,
+      material: spool.material,
+      colorName: spool.color_name ?? "Unnamed",
+      colorHex: spool.rgba,
+      tip,
+    },
+    select: { id: true, title: true },
+  });
+
+  await record({
+    action: "story.created",
+    actor,
+    subject: storyRef(story.id),
+    detail: { title: story.title, uploaded: checked.filename, kind: checked.kind, spoolId: spool.id },
+  });
+  await tellOwnerAboutRequest(actor, story);
+
+  await processIntake(story.id);
+
+  refresh(story.id);
+  return { id: story.id, ref: storyRef(story.id), title: story.title };
+}
+
+/** Into Bambuddy's library, or a refusal the form can show. */
+async function toLibrary(filename: string, bytes: Uint8Array<ArrayBuffer>) {
+  try {
+    return await uploadLibraryFile(filename, bytes);
+  } catch (error) {
+    console.error("[upload] Bambuddy refused the file", error);
+    if (error instanceof BambuddyError && error.status >= 400 && error.status < 500) {
+      const detail = (error.body as { detail?: unknown } | undefined)?.detail;
+      throw problem(
+        400,
+        `Bambuddy wouldn't take that file${typeof detail === "string" ? `: ${detail}` : "."}`,
+      );
+    }
+    throw problem(503, "Can't reach the printer's library right now — try again in a minute.");
+  }
+}
+
+async function tellOwnerAboutRequest(actor: Actor, story: { id: number; title: string }) {
+  const owner = await printerOwner();
+  if (owner && owner.id !== actor.id) {
+    await notify({
+      recipientId: owner.id,
+      storyId: story.id,
+      text: `${actor.name} asked for “${story.title}”.`,
+    });
+  }
+}
+
+/**
+ * The wish checks every new request shares: the tip, and the spool.
+ */
+async function checkWish(input: { tip?: string; spoolId: number }) {
   // The tip jar is optional (src/lib/settings.ts). Off, a posted tip is
   // ignored rather than refused, so a script written while it was on keeps
   // working. On, the tip must be on the active list — the catalogue, not the
@@ -611,45 +888,7 @@ export async function createStoryFromLink(actor: Actor, input: CreateStoryInput)
     // The picker only offers PLA, but the API takes any spool id.
     throw problem(400, "Only PLA can be printed here — pick a PLA color.");
   }
-
-  const story = await db.story.create({
-    data: {
-      title: input.title,
-      uploaderId: actor.id,
-      status: "Requested",
-      modelUrl: input.modelUrl,
-      quantity: input.quantity,
-      neededBy: input.neededBy ?? null,
-      note: input.note,
-      spoolId: spool.id,
-      material: spool.material,
-      colorName: spool.color_name ?? "Unnamed",
-      colorHex: spool.rgba,
-      tip,
-    },
-    select: { id: true, title: true },
-  });
-
-  await record({
-    action: "story.created",
-    actor,
-    subject: storyRef(story.id),
-    detail: { title: story.title, modelUrl: input.modelUrl, spoolId: spool.id },
-  });
-
-  const owner = await printerOwner();
-  if (owner && owner.id !== actor.id) {
-    await notify({
-      recipientId: owner.id,
-      storyId: story.id,
-      text: `${actor.name} asked for “${story.title}”.`,
-    });
-  }
-
-  await processIntake(story.id);
-
-  refresh(story.id);
-  return { id: story.id, ref: storyRef(story.id), title: story.title };
+  return { tip, spool };
 }
 
 /**
@@ -681,10 +920,10 @@ export async function withdrawStory(actor: Actor, id: number) {
     throw problem(403, "Only the person who asked for it can withdraw it.");
   }
 
-  if (story.status !== "Requested" && story.status !== "Declined") {
+  if (story.status !== "Requested" && story.status !== "Declined" && story.status !== "Prep") {
     throw problem(
       409,
-      `${storyRef(story.id)} is already ${story.status.toLowerCase()} — ` +
+      `${storyRef(story.id)} is already ${statusLabel(story.status).toLowerCase()} — ` +
         `ask ${await printerName()} instead.`,
     );
   }
@@ -847,13 +1086,18 @@ export async function requeueStory(actor: Actor, id: number) {
       id: true, title: true, quantity: true, neededBy: true, modelUrl: true,
       spoolId: true, material: true, colorName: true, colorHex: true,
       tip: true, note: true, uploaderId: true,
+      sourceFilename: true, preparedFilename: true, libraryFileId: true, libraryFileKind: true,
     },
   });
   if (!src) throw problem(404, "That ticket no longer exists.");
   if (src.uploaderId !== actor.id) {
     throw problem(403, "Only the person who asked for it can print it again.");
   }
-  if (!isHttpUrl(src.modelUrl)) {
+  // An upload, or a ticket the printer owner prepared, prints again from the
+  // same file in Bambuddy's library — no re-upload, no re-prep. Anything else
+  // starts again from its MakerWorld link.
+  const fromFile = (src.sourceFilename !== null || src.preparedFilename !== null) && src.libraryFileId !== null;
+  if (!fromFile && !isHttpUrl(src.modelUrl)) {
     throw problem(409, "This ticket has no model link to print from — submit it again as a new request.");
   }
 
@@ -871,6 +1115,12 @@ export async function requeueStory(actor: Actor, id: number) {
       colorHex: src.colorHex,
       tip: src.tip,
       note: src.note,
+      ...(fromFile && {
+        sourceFilename: src.sourceFilename,
+        preparedFilename: src.preparedFilename,
+        libraryFileId: src.libraryFileId,
+        libraryFileKind: src.libraryFileKind,
+      }),
     },
     select: { id: true },
   });

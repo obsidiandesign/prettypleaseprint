@@ -122,7 +122,7 @@ export function queueOutcome(c: QueueCounts): { status: StoryStatus; note: strin
  * the print starts. Every request is sliced as PLA, so colour never affects
  * slicing; it only matters when the owner maps slots to the AMS in Bambuddy.
  */
-export const COLOUR_EDITABLE: readonly StoryStatus[] = ["Requested", "Slicing", "Ready"];
+export const COLOUR_EDITABLE: readonly StoryStatus[] = ["Requested", "Prep", "Slicing", "Ready"];
 
 /**
  * The columns the board draws, in the order a request actually moves through
@@ -137,10 +137,20 @@ export const COLOUR_EDITABLE: readonly StoryStatus[] = ["Requested", "Slicing", 
  */
 export const BOARD = [
   "Requested",
+  "Prep",
   "Slicing",
   "Ready",
   "Printing",
 ] as const satisfies readonly StoryStatus[];
+
+/**
+ * How a status reads to a person, where the enum's own name doesn't. `Prep`
+ * is "Needs prep": the ticket waits for the printer owner to prepare the
+ * model in Bambu Studio and attach the result.
+ */
+export const STATUS_LABEL: Partial<Record<StoryStatus, string>> = { Prep: "Needs prep" };
+export const statusLabel = (status: StoryStatus | string): string =>
+  STATUS_LABEL[status as StoryStatus] ?? status;
 
 /** Every status a ticket can be in — `BOARD`'s order plus the three that leave it. */
 export const ALL_STATUSES = [...BOARD, "Done", "Failed", "Declined"] as const satisfies readonly StoryStatus[];
@@ -232,8 +242,9 @@ export function assertDecline(actor: Actor, from: StoryStatus): void {
   if (actor.role !== "admin") {
     throw new AuthzError("Only the printer owner can decline a request.");
   }
-  if (from !== "Requested") {
-    throw new AuthzError(`Cannot decline a request that is already ${from}.`);
+  // Prep holds nothing in Bambuddy's queue yet — saying no is still clean.
+  if (from !== "Requested" && from !== "Prep") {
+    throw new AuthzError(`Cannot decline a request that is already ${statusLabel(from)}.`);
   }
 }
 

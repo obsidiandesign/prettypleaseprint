@@ -62,6 +62,9 @@ no header that names a user.
 | `GET` | `/api/stories/{id}` | One ticket. |
 | `DELETE` | `/api/stories/{id}` | Withdraw your own request. |
 | `PUT` | `/api/stories/{id}/colours` | Choose a multi-colour model's colours. |
+| `POST` | `/api/stories/{id}/prep` | Send to "Needs prep". *Printer owner.* |
+| `POST` | `/api/stories/{id}/prepared` | Attach the file prepared in Bambu Studio (multipart). *Printer owner.* |
+| `GET` | `/api/stories/{id}/file` | Download the model, to prepare it. *Printer owner.* |
 | `POST` | `/api/stories/{id}/decline` | Say no. *Printer owner.* |
 | `POST` | `/api/stories/{id}/flag` | Flag a model problem, with a reason. *Printer owner.* |
 | `DELETE` | `/api/stories/{id}/flag` | Clear the flag. *Printer owner.* |
@@ -108,7 +111,23 @@ request with *no* `Origin` header is fine — that is `curl`, and it is not a
 browser being driven by somebody else's page. A request with the wrong one is
 `403`.
 
-**5. A request is a link, not a file, and the colour is a spool.** `modelUrl`
+**5. A request is a link or an uploaded file, and the colour is a spool.**
+`POST /api/stories` takes JSON with a MakerWorld `modelUrl` (below), or
+`multipart/form-data` with a `file` — an `.stl` or `.3mf`, up to 100 MB, checked
+against its bytes — plus the same fields as form values and an optional
+`sourceLink`. An uploaded STL comes back in `Prep` ("Needs prep") for the
+printer owner to prepare; a 3MF project is sliced. An already-sliced 3MF is
+`400`. The file goes straight to Bambuddy's library; if Bambuddy can't take it
+you get `503` (or `400` with its reason) and nothing is created.
+
+```bash
+curl -s https://print.example/api/stories \
+  -H "authorization: Bearer $TOKEN" \
+  -F file=@bracket.stl -F title="Bracket" -F spoolId=7 -F quantity=2 \
+  -F sourceLink=https://www.printables.com/model/123-bracket
+```
+
+For a link, `modelUrl`
 must be a MakerWorld model page (`https://makerworld.com/.../models/<id>`);
 anything else could never be fetched, so it is refused up front. `spoolId` is
 the only thing that names a colour: it is looked up in Bambuddy's live

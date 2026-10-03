@@ -34,6 +34,11 @@ that: there is no multi-tenancy, no billing, and no queue theory.
 - **Ask with a link** — paste a MakerWorld model page, pick a colour from the
   PLA spools Bambuddy says are in stock right now, say how many and by when.
   No file to find, export or upload.
+- **Or upload a file** — an STL or 3MF from Printables, Thingiverse or
+  anywhere, up to 100 MB. A 3MF project is sliced like a MakerWorld model; an
+  STL goes to **Needs prep**, where the printer owner opens it in Bambu
+  Studio, fixes supports and orientation, and attaches the result. Any ticket
+  Bambuddy's slicer can't handle can be sent there too.
 - **Sliced and queued without anyone clicking** — the request goes straight to
   Bambuddy, which imports the model, slices it on the one PLA pipeline and
   puts it in the print queue. The app makes sure that queue entry **waits for

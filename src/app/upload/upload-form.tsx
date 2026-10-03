@@ -1,10 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 
 import { createStory } from "@/app/actions/stories";
 import { QUANTITY_PRESETS } from "@/lib/catalog";
+import { postWithProgress, uploadFailure } from "@/lib/upload-client";
 import { Button, Label } from "@/components/ui";
+
+const MAX_UPLOAD_MB = 100;
+
+/** "Bracket v2 (snap fit).stl" -> "Bracket v2 (snap fit)" for the title. */
+function titleFromFilename(name: string): string {
+  return name.replace(/(\.gcode)?\.(stl|3mf)$/i, "").replace(/[_]+/g, " ").trim().slice(0, 120);
+}
 
 export type Spool = {
   id: number;
@@ -75,25 +83,116 @@ export function UploadForm({
   const [quantity, setQuantity] = useState(1);
   const [spoolId, setSpoolId] = useState<number | "">(spools[0]?.id ?? "");
   const [submitting, setSubmitting] = useState(false);
+  // A MakerWorld link goes through the server action as before; a file goes
+  // to the API with upload progress (see onSubmit).
+  const [source, setSource] = useState<"link" | "file">("link");
+  const [title, setTitle] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    if (source === "link") {
+      setSubmitting(true); // the server action takes it from here
+      return;
+    }
+    event.preventDefault();
+    setUploadError(null);
+    if (!file) return setUploadError("Choose an .stl or .3mf file first.");
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      return setUploadError(`That file is over the ${MAX_UPLOAD_MB} MB limit.`);
+    }
+    setSubmitting(true);
+    setProgress(0);
+    const result = await postWithProgress("/api/stories", new FormData(event.currentTarget), setProgress);
+    const story = result.json?.story as { id?: number } | undefined;
+    if (result.status === 201 && story?.id) {
+      window.location.assign(`/story/${story.id}?sent=1`);
+      return;
+    }
+    setUploadError(uploadFailure(result));
+    setSubmitting(false);
+    setProgress(null);
+  }
 
   return (
     <form
       action={createStory}
-      onSubmit={() => setSubmitting(true)}
+      onSubmit={onSubmit}
+      encType={source === "file" ? "multipart/form-data" : undefined}
       className="max-w-[780px]"
     >
-      {/* ---- the link ---- */}
-      <div>
-        <Label htmlFor="modelUrl">Paste the model link</Label>
-        <input
-          id="modelUrl"
-          name="modelUrl"
-          required
-          maxLength={2000}
-          placeholder="https://makerworld.com/en/models/..."
-          className="w-full rounded-card border-[3px] border-ink bg-porcelain px-[15px] py-[12px] font-mono text-[15px] text-ink placeholder:text-ink-3"
-        />
+      {/* ---- where the model comes from ---- */}
+      <div role="tablist" aria-label="Where the model comes from" className="mb-[17.6px] flex flex-wrap gap-[6px]">
+        {([
+          ["link", "Paste a MakerWorld link"],
+          ["file", "Upload a file"],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={source === value}
+            onClick={() => {
+              setSource(value);
+              setUploadError(null);
+            }}
+            className={`cursor-pointer rounded-chip border-[3px] border-ink px-[15px] py-[8px] font-mono text-[12.5px] font-bold uppercase tracking-[0.06em] transition-colors ${
+              source === value ? "bg-cherry-dk text-cream" : "bg-porcelain text-ink hover:bg-sun"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
+
+      {source === "link" ? (
+        <div>
+          <Label htmlFor="modelUrl">Paste the model link</Label>
+          <input
+            id="modelUrl"
+            name="modelUrl"
+            required
+            maxLength={2000}
+            placeholder="https://makerworld.com/en/models/..."
+            className="w-full rounded-card border-[3px] border-ink bg-porcelain px-[15px] py-[12px] font-mono text-[15px] text-ink placeholder:text-ink-3"
+          />
+        </div>
+      ) : (
+        <div>
+          <Label htmlFor="file">The model file</Label>
+          <input
+            id="file"
+            name="file"
+            type="file"
+            required
+            accept=".stl,.3mf,model/stl,model/3mf"
+            onChange={(e) => {
+              const chosen = e.target.files?.[0] ?? null;
+              setFile(chosen);
+              setUploadError(null);
+              if (chosen && !title) setTitle(titleFromFilename(chosen.name));
+            }}
+            className="block w-full cursor-pointer rounded-card border-[3px] border-dashed border-ink bg-porcelain px-[15px] py-[14px] font-mono text-[14px] text-ink file:mr-[13px] file:cursor-pointer file:rounded-chip file:border-[3px] file:border-ink file:bg-sun file:px-[13px] file:py-[5px] file:font-mono file:text-[12px] file:font-bold file:uppercase"
+          />
+          <p className="m-0 mt-[8px] text-[13.5px] leading-[1.45] text-ink-3">
+            An .stl or .3mf, up to {MAX_UPLOAD_MB} MB — from Printables, Thingiverse or anywhere.
+            An STL goes to {owner} to prepare in Bambu Studio first; a 3MF project is sliced
+            straight away.
+          </p>
+          <div className="mt-[17.6px]">
+            <Label htmlFor="sourceLink">Where&rsquo;s it from? (optional)</Label>
+            <input
+              id="sourceLink"
+              name="sourceLink"
+              type="url"
+              maxLength={2000}
+              placeholder="https://www.printables.com/model/..."
+              className="w-full rounded-card border-[3px] border-ink bg-porcelain px-[15px] py-[12px] font-mono text-[15px] text-ink placeholder:text-ink-3"
+            />
+          </div>
+        </div>
+      )}
 
       {/* ---- title ---- */}
       <div className="mt-[22px]">
@@ -103,6 +202,8 @@ export function UploadForm({
           name="title"
           required
           maxLength={120}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
           placeholder="Hook for the monitor arm"
           className="w-full rounded-card border-[3px] border-ink bg-porcelain px-[15px] py-[12px] text-[16px] text-ink placeholder:text-ink-3"
         />
@@ -257,13 +358,33 @@ export function UploadForm({
       )}
 
       {/* ---- actions ---- */}
+      {uploadError && (
+        <p role="alert" className="m-0 mt-[22px] rounded-card border-[3px] border-ink bg-cherry-wash px-[15px] py-[11px] text-[15px] text-cherry-dk">
+          {uploadError}
+        </p>
+      )}
       <div className="mt-[26.4px] flex flex-wrap items-center gap-[13.2px]">
         <Button type="submit" disabled={!spoolId || submitting} className="px-[30px]">
           {submitting ? "Sending…" : `Send it to ${owner}`}
         </Button>
-        {submitting && (
+        {submitting && progress !== null && progress < 1 && (
+          <span className="flex items-center gap-[10px] font-mono text-[11.5px] uppercase tracking-[0.06em] text-ink-3">
+            <span
+              role="progressbar"
+              aria-label="Upload progress"
+              aria-valuenow={Math.round(progress * 100)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              className="inline-block h-[10px] w-[140px] overflow-hidden rounded-full border-2 border-ink bg-porcelain"
+            >
+              <span className="block h-full bg-sun" style={{ width: `${Math.round(progress * 100)}%` }} />
+            </span>
+            Uploading {Math.round(progress * 100)}%
+          </span>
+        )}
+        {submitting && (progress === null || progress >= 1) && (
           <span className="font-mono text-[11.5px] uppercase tracking-[0.06em] text-ink-3">
-            Resolving and slicing — this can take a little while.
+            {source === "file" ? "Handing it to Bambuddy — a moment." : "Resolving and slicing — this can take a little while."}
           </span>
         )}
       </div>

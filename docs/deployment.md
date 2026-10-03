@@ -209,7 +209,8 @@ container sits on Docker's default network and can reach LAN addresses as-is.
 On the Bambuddy side, once:
 
 1. **A service account and an API key** with **Manage Library + Manage Queue**
-   only. Leave Control Printer off: a compromise of this app can then slice and
+   only (Manage Library includes uploading to and downloading from the
+   library, which uploads and "Needs prep" use). Leave Control Printer off: a compromise of this app can then slice and
    queue, but never start, stop or touch a running print. A dedicated account
    keeps the key working if your own account's role changes.
 2. **One Slicer Pipeline, as the settings template.** Its id goes in

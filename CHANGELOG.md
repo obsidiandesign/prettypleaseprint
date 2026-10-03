@@ -7,6 +7,18 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Added
 
+- **Upload a file, and "Needs prep".** Besides a MakerWorld link, a request
+  can be an uploaded `.stl` or `.3mf` (up to 100 MB, checked against its
+  bytes, passed straight into Bambuddy's library — the app keeps no copy).
+  A 3MF project is sliced like a MakerWorld model. An STL goes to a new
+  **Needs prep** stage: the printer owner downloads it, prepares it in Bambu
+  Studio, and attaches either a sliced `.gcode.3mf` (queued exactly as
+  sliced) or a project `.3mf` (sliced). Any `Requested`, `Slicing` or
+  `Failed` ticket can be sent there too — the rescue for a model Bambuddy's
+  slicer can't handle. Print again reuses the uploaded or prepared file.
+  New endpoints: multipart `POST /api/stories`, `POST /api/stories/{id}/prep`,
+  `POST /api/stories/{id}/prepared`, `GET /api/stories/{id}/file`.
+
 - **Multi-colour models.** Intake now reads which colours a model's plate
   uses (Bambuddy's `filament-requirements`, right after import) and records
   them on the ticket. The colour picked on the order form goes on the part

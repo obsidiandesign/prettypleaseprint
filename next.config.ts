@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
 
+import { MAX_UPLOAD_BYTES } from "./src/lib/model-files";
+
 const isProd = process.env.NODE_ENV === "production";
 
 // The CSP is per-request (it carries a nonce) and therefore lives in
@@ -41,6 +43,17 @@ const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
   serverExternalPackages: ["@prisma/client", "nodemailer"],
+  experimental: {
+    /**
+     * Let a model upload be as large as the app accepts. Next caps a request
+     * body at 10 MB whenever middleware is in play (it is here: it mints the
+     * CSP nonce), truncating anything bigger before a route sees it. A
+     * multipart body is the file plus boundaries and form fields, so the cap
+     * sits a little above the file limit, letting the app's own check be the
+     * one that answers "too big".
+     */
+    middlewareClientMaxBodySize: MAX_UPLOAD_BYTES + 2 * 1024 * 1024,
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

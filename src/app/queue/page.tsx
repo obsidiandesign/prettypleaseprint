@@ -41,12 +41,14 @@ export default async function QueuePage({
     },
   });
 
+  // Waiting on you in Bambu Studio — its own pile, whatever else it carries.
+  const prep = stories.filter((s) => s.status === "Prep");
   const needsAttention = stories.filter(
-    (s) => s.errorMessage && s.status !== "Failed" && s.status !== "Declined",
+    (s) => s.errorMessage && s.status !== "Failed" && s.status !== "Declined" && s.status !== "Prep",
   );
   const ready = stories.filter((s) => s.status === "Ready");
   const rest = stories.filter(
-    (s) => !needsAttention.includes(s) && s.status !== "Ready" && s.status !== "Declined",
+    (s) => !needsAttention.includes(s) && !prep.includes(s) && s.status !== "Ready" && s.status !== "Declined",
   );
 
   return (
@@ -61,6 +63,8 @@ export default async function QueuePage({
         <p className="m-0 mb-[26.4px] text-[16.5px] leading-[1.5] text-ink-2">
           {needsAttention.length
             ? `${needsAttention.length} ${needsAttention.length === 1 ? "ticket needs" : "tickets need"} a look.`
+            : prep.length
+              ? `${prep.length} waiting for you in Bambu Studio.`
             : ready.length
               ? `${ready.length} sliced and ready whenever you are.`
               : "Nothing waiting. Enjoy the quiet."}
@@ -110,6 +114,39 @@ export default async function QueuePage({
                 </article>
               ))}
             </div>
+          </section>
+        )}
+
+        {/* ---- waiting for the owner to prepare them in Bambu Studio ---- */}
+        {prep.length > 0 && (
+          <section className="mb-[26.4px] overflow-hidden rounded-panel border-[3px] border-ink bg-cream-2 shadow-stamp">
+            <div className="layers border-b-[3px] border-ink px-[22px] py-[11px]">
+              <h2 className="m-0 font-display text-[20px] text-ink">Needs prep</h2>
+            </div>
+            <div className="flex flex-col gap-[8.8px] p-[17.6px]">
+              {prep.map((story) => (
+                <div key={story.id} className="flex flex-wrap items-center gap-[13.2px]">
+                  <Link href={`/story/${story.id}`} className="font-display text-[16px] text-ink hover:text-cherry-dk">
+                    {story.title}
+                  </Link>
+                  <span className="font-mono text-[11.5px] uppercase tracking-[0.05em] text-ink-3">
+                    {quantityText(story.quantity)} · {story.uploader.name}
+                  </span>
+                  <a
+                    href={`/api/stories/${story.id}/file`}
+                    className="font-mono text-[11.5px] font-bold uppercase tracking-[0.05em] text-ink underline underline-offset-4 hover:text-cherry-dk"
+                  >
+                    Download {story.preparedFilename ?? story.sourceFilename ?? "model"}
+                  </a>
+                  {story.errorMessage && (
+                    <span className="w-full text-[13.5px] text-cherry-dk">{story.errorMessage}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="m-0 border-t-2 border-dashed border-rule px-[17.6px] py-[8.8px] font-mono text-[11px] uppercase tracking-[0.04em] text-ink-3">
+              Fix it in Bambu Studio, then attach the result on the ticket.
+            </p>
           </section>
         )}
 

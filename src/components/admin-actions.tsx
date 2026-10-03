@@ -1,4 +1,4 @@
-import { clearFlag, declineStory, flagStory } from "@/app/actions/stories";
+import { clearFlag, declineStory, flagStory, sendToPrep } from "@/app/actions/stories";
 import type { StoryStatus } from "@prisma/client";
 
 /**
@@ -22,17 +22,21 @@ export function AdminActions({
   flagged,
   flagReason,
   from,
+  canPrep = false,
   compact = false,
 }: {
   storyId: number;
   status: StoryStatus;
+  /** Whether "Send to Needs prep" applies — see `sendToPrep` in stories.ts. */
+  canPrep?: boolean;
   flagged: boolean;
   flagReason?: string | null;
   /** Where to return with the result. Validated server-side. */
   from: string;
   compact?: boolean;
 }) {
-  const isNew = status === "Requested";
+  // Declining is clean while nothing is in Bambuddy's queue yet.
+  const isNew = status === "Requested" || status === "Prep";
   const declined = status === "Declined";
 
   if (declined) {
@@ -87,6 +91,20 @@ export function AdminActions({
               className="stamp cursor-pointer rounded-chip border-[3px] border-ink bg-mint px-[15px] py-[8px] text-[14px] font-bold text-ink hover:bg-mint-wash"
             >
               Clear the flag
+            </button>
+          </form>
+        )}
+
+        {canPrep && (
+          <form action={sendToPrep}>
+            <input type="hidden" name="id" value={storyId} />
+            <input type="hidden" name="from" value={from} />
+            <button
+              type="submit"
+              title="Prepare it in Bambu Studio yourself, then attach the result"
+              className="stamp cursor-pointer rounded-chip border-[3px] border-ink bg-aqua px-[15px] py-[8px] text-[14px] font-bold text-ink hover:bg-aqua-wash"
+            >
+              Send to Needs prep
             </button>
           </form>
         )}

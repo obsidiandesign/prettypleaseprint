@@ -6,7 +6,7 @@ import { getStoryOr404, printerName, requireUser, storyRef, BOARD } from "@/lib/
 import { quantityText, relativeTime } from "@/lib/catalog";
 import { isHttpUrl } from "@/lib/stories";
 import { isPla, listSpools } from "@/lib/bambuddy";
-import { COLOUR_EDITABLE } from "@/lib/scope";
+import { COLOUR_EDITABLE, statusLabel } from "@/lib/scope";
 import { ColourSlots, type ColourSlot } from "@/components/colour-slots";
 import { AppHeader } from "@/components/app-header";
 import { Fact, Notice, StatusChip } from "@/components/ui";
@@ -15,11 +15,17 @@ import { Conversation } from "@/components/conversation";
 import { Toast } from "@/components/toast";
 import { WithdrawStory } from "@/components/withdraw-story";
 import { RequeueStory } from "@/components/requeue-story";
+import { PrepPanel } from "@/components/prep-panel";
 
 export const dynamic = "force-dynamic";
 
-/** The happy path, in display order — `Failed`/`Declined` are branches off it, not steps on it. */
+/**
+ * The happy path, in display order — `Failed`/`Declined` are branches off it,
+ * not steps on it. "Needs prep" is a step only for a ticket that goes through
+ * it (an uploaded STL, or one the printer owner sent there).
+ */
 const HAPPY_PATH = [...BOARD, "Done"] as const;
+const WITHOUT_PREP = HAPPY_PATH.filter((s) => s !== "Prep");
 
 /**
  * Story detail — the read half. Handoff §4.
@@ -45,7 +51,14 @@ export default async function StoryPage({
   const story = await getStoryOr404(storyId, user);
   const owner = await printerName();
 
-  const currentIndex = (HAPPY_PATH as readonly string[]).indexOf(story.status);
+  const throughPrep =
+    story.status === "Prep" || story.preparedFilename !== null || story.libraryFileKind === "stl";
+  const path: readonly string[] = throughPrep ? HAPPY_PATH : WITHOUT_PREP;
+  const currentIndex = path.indexOf(story.status);
+  const canPrep =
+    ["Requested", "Slicing", "Failed"].includes(story.status) &&
+    story.libraryFileId !== null &&
+    (story.pipelineRunId === null || story.status === "Failed");
   const branchedOff = story.status === "Declined" || story.status === "Failed";
   const swatch = story.colorHex ? `#${story.colorHex.replace(/^#/, "")}` : "#b6bcc2";
   const multiColour = story.filaments.length > 1;
@@ -78,7 +91,23 @@ export default async function StoryPage({
               <div className="p-[17.6px]">
                 {/* Validated at intake too; checked again here so a row that
                     predates the check can never become a clickable javascript: link. */}
-                {isHttpUrl(story.modelUrl) ? (
+                {story.sourceFilename !== null ? (
+                  <>
+                    <p className="m-0 break-all font-mono text-[13px] text-ink">
+                      Uploaded: {story.sourceFilename}
+                    </p>
+                    {isHttpUrl(story.modelUrl) && (
+                      <a
+                        href={story.modelUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-[6px] block break-all font-mono text-[11.5px] text-ink-2 underline underline-offset-4 hover:text-cherry-dk"
+                      >
+                        From {story.modelUrl}
+                      </a>
+                    )}
+                  </>
+                ) : isHttpUrl(story.modelUrl) ? (
                   <a
                     href={story.modelUrl}
                     target="_blank"
@@ -92,7 +121,12 @@ export default async function StoryPage({
                     {story.modelUrl || "No model link — this request predates link intake."}
                   </p>
                 )}
-                {story.resolvedTitle && isHttpUrl(story.modelUrl) && (
+                {story.preparedFilename !== null && (
+                  <p className="m-0 mt-[6px] break-all font-mono text-[11.5px] text-ink-2">
+                    Prepared by {owner}: {story.preparedFilename}
+                  </p>
+                )}
+                {story.sourceFilename === null && story.resolvedTitle && isHttpUrl(story.modelUrl) && (
                   <p className="m-0 mt-[6px] break-all font-mono text-[11px] text-ink-3">
                     {story.modelUrl}
                   </p>
@@ -114,7 +148,7 @@ export default async function StoryPage({
               <span className="rounded-chip border-2 border-ink bg-porcelain px-[11px] py-[3px] font-mono text-[12px] font-bold tracking-[0.06em] text-ink">
                 {storyRef(story.id)}
               </span>
-              <StatusChip status={story.status} />
+              <StatusChip status={story.status} label={statusLabel(story.status)} />
               {story.flagged && (
                 <span className="rounded-chip border-2 border-ink bg-cherry px-[11px] py-[3px] font-mono text-[11.5px] font-bold uppercase tracking-[0.06em] text-ink">
                   flagged{story.flagReason ? `: ${story.flagReason}` : ""}
@@ -134,7 +168,15 @@ export default async function StoryPage({
             {/* Bambuddy's own explanation — a real failure, or just a Ready
                 ticket it flagged with a waiting_reason (see bambuddy-sync.ts).
                 Shown as-is, since it's written for a person already. */}
-            {story.errorMessage && (
+            {story.status === "Prep" && user.role !== "admin" && (
+              <div className="mb-[22px]">
+                <Notice>
+                  {owner} is preparing this one in Bambu Studio before it prints — supports,
+                  orientation and the like. It moves on by itself once that&rsquo;s done.
+                </Notice>
+              </div>
+            )}
+            {story.errorMessage && !(story.status === "Prep" && user.role === "admin") && (
               <div className="mb-[22px]">
                 <Notice tone="warn">{story.errorMessage}</Notice>
               </div>
@@ -197,7 +239,7 @@ export default async function StoryPage({
                 </p>
               ) : (
                 <ol className="m-0 flex list-none flex-col p-0">
-                  {HAPPY_PATH.map((step, i) => {
+                  {path.map((step, i) => {
                     const done = currentIndex >= 0 && i < currentIndex;
                     const now = i === currentIndex;
                     return (
@@ -209,7 +251,7 @@ export default async function StoryPage({
                               done ? "bg-mint" : now ? "bg-sun" : "bg-cream-3"
                             }`}
                           />
-                          {i < HAPPY_PATH.length - 1 && (
+                          {i < path.length - 1 && (
                             <span
                               aria-hidden
                               className={`w-[4px] flex-1 ${done ? "bg-mint" : "bg-cream-3"}`}
@@ -223,7 +265,7 @@ export default async function StoryPage({
                               done || now ? "text-ink" : "text-ink-3"
                             }`}
                           >
-                            {step}
+                            {statusLabel(step)}
                           </div>
                           <div className="mt-[3px] font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-ink-3">
                             {now ? "now" : done ? "cleared" : "waiting"}
@@ -280,12 +322,24 @@ export default async function StoryPage({
                     <Notice tone="warn">{error}</Notice>
                   </div>
                 )}
+                {story.status === "Prep" && (
+                  <div className="mb-[17.6px]">
+                    <PrepPanel
+                      storyId={story.id}
+                      error={story.errorMessage}
+                      downloadName={
+                        story.preparedFilename ?? story.sourceFilename ?? `${storyRef(story.id)}.3mf`
+                      }
+                    />
+                  </div>
+                )}
                 <AdminActions
                   storyId={story.id}
                   status={story.status}
                   flagged={story.flagged}
                   flagReason={story.flagReason}
                   from={`/story/${story.id}`}
+                  canPrep={canPrep}
                 />
               </section>
             )}

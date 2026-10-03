@@ -471,10 +471,10 @@ async function main() {
   check("a Done ticket is off the board",
         !boardHtml.includes("Bracket, delivered"),
         "the rail is supposed to carry only what is still moving");
-  check("but the board still draws the four live rails",
-        ["Requested", "Slicing", "Ready", "Printing"].every((c) => boardHtml.includes(c)));
+  check("but the board still draws the five live rails",
+        ["Requested", "Needs prep", "Slicing", "Ready", "Printing"].every((c) => boardHtml.includes(c)));
   check("and Done is not one of them",
-        BOARD.length === 4 && !(BOARD as readonly string[]).includes("Done"),
+        BOARD.length === 5 && !(BOARD as readonly string[]).includes("Done"),
         BOARD.join(", "));
 
   const mine = rendered(await (await client.go(`${APP}/me`)).text());

@@ -184,6 +184,8 @@ export function storyResource(story: StoryRow, { tipJar }: { tipJar: boolean }) 
     model: {
       url: story.modelUrl,
       resolvedTitle: story.resolvedTitle,
+      uploadedFilename: story.sourceFilename,
+      preparedFilename: story.preparedFilename,
     },
     material: story.material,
     color: { name: story.colorName, hex: story.colorHex },

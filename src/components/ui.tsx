@@ -1,5 +1,7 @@
 import type { ComponentProps, ReactNode } from "react";
 
+import { statusLabel } from "@/lib/scope";
+
 /**
  * The neon logotype. A script wordmark on a lit disc — the sign over the door.
  *
@@ -180,6 +182,7 @@ export function Fact({ label, children }: { label: string; children: ReactNode }
  */
 const CHIP_SKIN: Record<string, string> = {
   Requested: "bg-chrome text-ink",
+  Prep: "bg-cream-3 text-ink",
   Slicing: "bg-aqua text-ink",
   Ready: "bg-mint-wash text-ink",
   Printing: "bg-sun text-ink",
@@ -208,7 +211,7 @@ export function StatusChip({
         CHIP_SKIN[status] ?? CHIP_SKIN.Requested
       } ${className}`}
     >
-      {label ?? status}
+      {label ?? statusLabel(status)}
     </span>
   );
 }

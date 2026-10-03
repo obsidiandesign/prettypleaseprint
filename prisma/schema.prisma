@@ -253,6 +253,10 @@ enum StoryStatus {
   Done
   Failed
   Declined
+  /// Waiting for the printer owner to prepare the model in Bambu Studio and
+  /// attach the result — every uploaded STL, and any ticket sent there.
+  /// Shown as "Needs prep".
+  Prep
 }
 
 model Story {
@@ -273,9 +277,18 @@ model Story {
   /// was off or nothing was offered. Kept while the jar is off, just not shown.
   tip String @default("")
 
-  /// The pasted MakerWorld model link — this
-  /// replaces file upload as the intake mechanism entirely.
+  /// The pasted MakerWorld model link. For an uploaded file, the optional
+  /// "where's it from" link the requester gave (any http(s) page), or "".
   modelUrl String
+
+  /// The uploaded file's name; null for a MakerWorld link.
+  sourceFilename   String?
+  /// What `libraryFileId` currently holds, and so what intake does with it:
+  /// "stl" waits for prep, "3mf" is sliced, "gcode.3mf" (an owner's own
+  /// slice) is queued as it is. Null for a MakerWorld link before import.
+  libraryFileKind  String?
+  /// The file the printer owner attached after preparing it, by name.
+  preparedFilename String?
 
   /// Filled in from Bambuddy's URL resolution at intake, display only.
   resolvedTitle String?
