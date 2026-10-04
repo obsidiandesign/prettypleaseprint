@@ -5,7 +5,7 @@ import { notFound } from "next/navigation";
 import { getStoryOr404, printerName, requireUser, storyRef, BOARD } from "@/lib/authz";
 import { quantityText, relativeTime } from "@/lib/catalog";
 import { isHttpUrl } from "@/lib/stories";
-import { isPla, listSpools } from "@/lib/bambuddy";
+import { dedupeSpools, isPla, listSpools } from "@/lib/bambuddy";
 import { COLOUR_EDITABLE, statusLabel } from "@/lib/scope";
 import { ColourSlots, type ColourSlot } from "@/components/colour-slots";
 import { AppHeader } from "@/components/app-header";
@@ -355,9 +355,12 @@ export default async function StoryPage({
 
 async function EditableColours({ storyId, slots }: { storyId: number; slots: ColourSlot[] }) {
   try {
-    const spools = (await listSpools())
-      .filter((s) => isPla(s.material))
-      .map((s) => ({ id: s.id, name: s.color_name ?? "Unnamed", hex: s.rgba }));
+    const spools = dedupeSpools((await listSpools()).filter((s) => isPla(s.material))).map((s) => ({
+      id: s.id,
+      name: s.color_name ?? "Unnamed",
+      hex: s.rgba,
+      memberIds: s.memberIds,
+    }));
     return <ColourSlots storyId={storyId} slots={slots} spools={spools} from={`/story/${storyId}`} />;
   } catch {
     return <ColourSlots storyId={storyId} slots={slots} spools={null} inventoryError from={`/story/${storyId}`} />;

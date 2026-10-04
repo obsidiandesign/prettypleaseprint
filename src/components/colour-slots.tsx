@@ -11,7 +11,13 @@ export type ColourSlot = {
   colorHex: string | null;
 };
 
-export type ShelfSpool = { id: number; name: string; hex: string | null };
+/**
+ * One row per distinct colour+finish on the shelf (see `dedupeSpools`).
+ * `memberIds` lists every physical spool `id` collapses — a slot's saved
+ * `spoolId` only reads as "no longer on the shelf" if it's absent from
+ * every group's `memberIds`, not just unequal to the representative `id`.
+ */
+export type ShelfSpool = { id: number; name: string; hex: string | null; memberIds: number[] };
 
 const NO_COLOUR = "#b6bcc2";
 const swatchOf = (hex: string | null) => (hex ? `#${hex.replace(/^#/, "")}` : NO_COLOUR);
@@ -88,14 +94,20 @@ export function ColourSlots({
 
     // A pick whose spool has since left the shelf still shows, so saving the
     // form doesn't silently change it. Saving it again is refused, by design.
-    const gone = slot.spoolId !== null && !spools.some((s) => s.id === slot.spoolId);
+    // "Left the shelf" means no spool of that colour+finish remains at all —
+    // a saved id that moved to a different representative after dedupe
+    // (its reel got used up but a sibling of the same colour is still there)
+    // isn't gone, so the group's current id is what gets preselected.
+    const group = slot.spoolId === null ? undefined : spools.find((s) => s.memberIds.includes(slot.spoolId!));
+    const gone = slot.spoolId !== null && !group;
+    const selectedId = group ? group.id : slot.spoolId;
     return (
       <li key={slot.slotId} className="grid gap-[6px]">
         <label htmlFor={`slot-${storyId}-${slot.slotId}`}>{heading}</label>
         <select
           id={`slot-${storyId}-${slot.slotId}`}
           name={`slot-${slot.slotId}`}
-          defaultValue={slot.spoolId === null ? "" : String(slot.spoolId)}
+          defaultValue={selectedId === null ? "" : String(selectedId)}
           className={selectClass}
         >
           {!main && <option value="">Printer&rsquo;s choice (close to the designer&rsquo;s)</option>}

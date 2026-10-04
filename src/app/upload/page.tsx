@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 
 import { printerName, requireUser } from "@/lib/authz";
-import { isPla, listSpools } from "@/lib/bambuddy";
+import { dedupeSpools, isPla, listSpools } from "@/lib/bambuddy";
 import { listActiveBenefits } from "@/lib/benefits";
 import { getSettings } from "@/lib/settings";
 import { AppHeader } from "@/components/app-header";
@@ -71,10 +71,10 @@ async function ShelfAndForm({
   // that it can't drift from what's actually on the shelf. A Bambuddy hiccup
   // here (listSpools gives up after a few seconds) means an empty picker
   // rather than a broken page.
-  let spools: Awaited<ReturnType<typeof listSpools>> = [];
+  let spools: ReturnType<typeof dedupeSpools> = [];
   let inventoryError = false;
   try {
-    spools = (await listSpools()).filter((s) => isPla(s.material));
+    spools = dedupeSpools((await listSpools()).filter((s) => isPla(s.material)));
   } catch {
     inventoryError = true;
   }
