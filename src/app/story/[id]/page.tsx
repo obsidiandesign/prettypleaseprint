@@ -6,7 +6,7 @@ import { getStoryOr404, printerName, requireUser, storyRef, BOARD } from "@/lib/
 import { quantityText, relativeTime } from "@/lib/catalog";
 import { isHttpUrl } from "@/lib/stories";
 import { dedupeSpools, listSpools } from "@/lib/bambuddy";
-import { materialOf } from "@/lib/materials";
+import { materialOf, ticketMaterial } from "@/lib/materials";
 import { COLOUR_EDITABLE, statusLabel } from "@/lib/scope";
 import { ColourSlots, type ColourSlot } from "@/components/colour-slots";
 import { AppHeader } from "@/components/app-header";
@@ -365,9 +365,10 @@ async function EditableColours({
 }) {
   // Only the ticket's own material: it was sliced for it. A ticket with none
   // recorded is PLA, as every one was before materials.
-  const wanted = materialOf(material)?.key ?? "PLA";
+  // An unrecognised material offers no spools: the API refuses those edits too.
+  const wanted = ticketMaterial(material)?.key;
   try {
-    const spools = dedupeSpools((await listSpools()).filter((s) => materialOf(s.material)?.key === wanted)).map((s) => ({
+    const spools = dedupeSpools((await listSpools()).filter((s) => wanted !== undefined && materialOf(s.material)?.key === wanted)).map((s) => ({
       id: s.id,
       name: s.color_name ?? "Unnamed",
       hex: s.rgba,

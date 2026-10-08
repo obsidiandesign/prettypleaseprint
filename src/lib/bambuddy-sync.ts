@@ -2,7 +2,7 @@ import "server-only";
 import type { Prisma, StoryStatus } from "@prisma/client";
 
 import { db } from "@/lib/db";
-import { materialByKey, materialOf } from "@/lib/materials";
+import { materialByKey, ticketMaterial } from "@/lib/materials";
 import { record } from "@/lib/audit";
 import { notify, printerOwner } from "@/lib/authz";
 import {
@@ -258,7 +258,14 @@ const NOT_SET_UP = "The printer isn't set up to slice yet — the printer owner 
  * row) is PLA, which is all there was.
  */
 function materialKeyFor(spoolMaterial: string | null): string {
-  return materialOf(spoolMaterial)?.key ?? "PLA";
+  const material = ticketMaterial(spoolMaterial);
+  if (!material) {
+    throw new IntakeProblem(
+      NOT_SET_UP,
+      `The ticket's material “${spoolMaterial}” isn't one this app slices; not guessing a recipe for it.`,
+    );
+  }
+  return material.key;
 }
 
 async function loadTemplate(materialKey: string): Promise<SlicerPipeline> {
@@ -306,10 +313,10 @@ function hashHex(value: string | null | undefined): string {
  */
 async function planSlice(
   storyId: number,
+  material: string | null,
   libraryFileId: number,
 ): Promise<{ request: SliceRequest; printPlates: number[]; template: SlicerPipeline }> {
-  const story = await db.story.findUnique({ where: { id: storyId }, select: { material: true } });
-  const template = await loadTemplate(materialKeyFor(story?.material ?? null));
+  const template = await loadTemplate(materialKeyFor(material));
 
   const [slots, plates, picks] = await Promise.all([
     getFilamentSlots(libraryFileId).catch((error) => {
@@ -352,8 +359,8 @@ async function planSlice(
 }
 
 /** Plan and start a slice; the caller records `sliceJobId`. */
-async function startSlice(storyId: number, libraryFileId: number) {
-  const plan = await planSlice(storyId, libraryFileId);
+async function startSlice(story: { id: number; material: string | null }, libraryFileId: number) {
+  const plan = await planSlice(story.id, story.material, libraryFileId);
   const { job_id } = await sliceLibraryFile(libraryFileId, plan.request);
   return { jobId: job_id, printPlates: plan.printPlates };
 }
@@ -539,7 +546,7 @@ async function fromLibraryFile(
   }
   await recordFilaments(story, slots);
 
-  const slice = await startSlice(story.id, libraryFileId);
+  const slice = await startSlice(story, libraryFileId);
   const moved = await db.story.updateMany({
     where: { id: story.id, status: announcedFrom },
     data: { sliceJobId: slice.jobId, printPlates: slice.printPlates, status: "Slicing", errorMessage: null },
@@ -717,7 +724,7 @@ export async function processIntake(storyId: number): Promise<void> {
       }
       await recordFilaments(story, slots);
 
-      const slice = await startSlice(story.id, imported.library_file_id);
+      const slice = await startSlice(story, imported.library_file_id);
 
       // Record the handoff the moment the slice job exists. From here on the
       // story belongs to `syncStory`: it queues the result, or slices again if
@@ -913,7 +920,7 @@ export async function syncStory(storyId: number): Promise<void> {
         // minutes ago without this pass seeing it. Nothing was queued from
         // it, so slicing again is safe; at worst the library keeps a spare
         // sliced file.
-        const slice = await startSlice(story.id, story.libraryFileId!);
+        const slice = await startSlice(story, story.libraryFileId!);
         await db.story.update({
           where: { id: story.id },
           data: { sliceJobId: slice.jobId, printPlates: slice.printPlates, intakeStartedAt: null },

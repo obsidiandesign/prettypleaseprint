@@ -1,5 +1,6 @@
 import "server-only";
 import { revalidatePath } from "next/cache";
+import { Prisma } from "@prisma/client";
 
 import { db } from "@/lib/db";
 import { record } from "@/lib/audit";
@@ -90,13 +91,15 @@ export async function setMaterialEnabled(actor: Actor, key: string, enabled: boo
 
   const { enabledMaterials } = await getSettings();
   if (enabledMaterials.includes(key) === enabled) return;
-  const next = enabled ? [...enabledMaterials, key] : enabledMaterials.filter((k) => k !== key);
 
-  await db.appSettings.upsert({
-    where: { id: 1 },
-    create: { id: 1, enabledMaterials: next },
-    update: { enabledMaterials: next },
-  });
+  // Ensure the row exists, then change the one element in the database
+  // itself, so two toggles at once can't overwrite each other's list.
+  await db.appSettings.upsert({ where: { id: 1 }, create: { id: 1 }, update: {} });
+  await db.$executeRaw`UPDATE "app_settings" SET "enabledMaterials" = ${
+    enabled
+      ? Prisma.sql`array_append(array_remove("enabledMaterials", ${key}), ${key})`
+      : Prisma.sql`array_remove("enabledMaterials", ${key})`
+  }, "updatedAt" = now() WHERE "id" = 1`;
   await record({ action: enabled ? "material.enabled" : "material.disabled", actor, subject: material.key });
 
   for (const path of ["/admin/materials", "/upload", "/board", "/me"]) revalidatePath(path);

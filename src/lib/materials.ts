@@ -39,7 +39,7 @@ export const MATERIALS: readonly Material[] = [
     label: "PETG",
     pipelineEnv: "BAMBUDDY_PIPELINE_PETG",
     // Fibre-filled PETG needs a hardened nozzle and its own profile: not this one.
-    matches: (m) => /PETG/i.test(m) && !/\b(CF|GF)\b|CARBON|GLASS/i.test(m),
+    matches: (m) => /PETG/i.test(m) && !/CF|GF|CARBON|GLASS|FIBRE|FIBER/i.test(m),
     note: "Make a Slicer Pipeline in Bambuddy with your PETG process, filament preset and bed type, and set BAMBUDDY_PIPELINE_PETG to its id.",
   },
 ];
@@ -55,6 +55,16 @@ export function materialByKey(key: string): Material | undefined {
 export function materialOf(spoolMaterial: string | null | undefined): Material | null {
   if (!spoolMaterial) return null;
   return MATERIALS.find((m) => m.matches(spoolMaterial)) ?? null;
+}
+
+/**
+ * The material a ticket is sliced for, from its main spool's material.
+ * Tickets from before materials may have none recorded: those were all PLA.
+ * One that records a material we don't slice is `undefined`, never guessed at.
+ */
+export function ticketMaterial(spoolMaterial: string | null | undefined): Material | undefined {
+  if (!spoolMaterial) return materialByKey(ALWAYS_ON);
+  return materialOf(spoolMaterial) ?? undefined;
 }
 
 /** "PLA", "PLA or PETG", "PLA, PETG or TPU" — for a sentence. */

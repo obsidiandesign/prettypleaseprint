@@ -76,10 +76,14 @@ async function ShelfAndForm({
   let inventoryError = false;
   try {
     const printable = new Set((await printableMaterials()).map((m) => m.key));
-    const rank = (m: string) => MATERIALS.findIndex((x) => x.key === materialOf(m)?.key);
     // Baseline material first: the form preselects the first spool.
-    spools = dedupeSpools((await listSpools()).filter((s) => printable.has(materialOf(s.material)?.key ?? "")))
-      .sort((a, b) => rank(a.material) - rank(b.material));
+    spools = dedupeSpools(
+      (await listSpools())
+        .map((s) => ({ s, rank: MATERIALS.findIndex((m) => m.key === materialOf(s.material)?.key) }))
+        .filter(({ rank }) => rank >= 0 && printable.has(MATERIALS[rank]!.key))
+        .sort((a, b) => a.rank - b.rank)
+        .map(({ s }) => s),
+    );
   } catch {
     inventoryError = true;
   }

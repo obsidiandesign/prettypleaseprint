@@ -17,7 +17,7 @@ import {
   type Actor,
 } from "@/lib/scope";
 import { BambuddyError, downloadLibraryFile, listSpools, uploadLibraryFile } from "@/lib/bambuddy";
-import { listLabels, materialOf } from "@/lib/materials";
+import { listLabels, materialOf, ticketMaterial } from "@/lib/materials";
 import { activeBenefitLabels } from "@/lib/benefits";
 import { intakeNotRunning, processIntake, processPreparedFile } from "@/lib/bambuddy-sync";
 import { checkModelFile } from "@/lib/model-files";
@@ -1017,8 +1017,10 @@ export async function setStoryColours(actor: Actor, id: number, raw: unknown) {
 
   // The slicer's settings follow the ticket's material, so a colour change
   // may only swap one spool for another of the same material.
-  const ticketMaterial = materialOf(story.material);
-  const printable = await printableMaterials();
+  const sliceMaterial = ticketMaterial(story.material);
+  if (!sliceMaterial) {
+    throw problem(409, `${storyRef(story.id)} is in a material this app doesn't slice; its colours can't be changed here.`);
+  }
 
   const updates = parsed.data.slots.map((pick) => {
     if (pick.spoolId === null) {
@@ -1026,14 +1028,8 @@ export async function setStoryColours(actor: Actor, id: number, raw: unknown) {
     }
     const spool = spools.find((s) => s.id === pick.spoolId);
     if (!spool) throw problem(409, "One of those colours isn't available any more — refresh and pick again.");
-    const pickMaterial = materialOf(spool.material);
-    if (ticketMaterial ? pickMaterial?.key !== ticketMaterial.key : !pickMaterial || !printable.some((m) => m.key === pickMaterial.key)) {
-      throw problem(
-        400,
-        ticketMaterial
-          ? `This ticket is sliced for ${ticketMaterial.label} — pick a ${ticketMaterial.label} colour.`
-          : `Only ${listLabels(printable)} can be printed here — pick a ${listLabels(printable)} colour.`,
-      );
+    if (materialOf(spool.material)?.key !== sliceMaterial.key) {
+      throw problem(400, `This ticket is sliced for ${sliceMaterial.label} — pick a ${sliceMaterial.label} colour.`);
     }
     return {
       slotId: pick.slotId,
@@ -1117,8 +1113,11 @@ export async function requeueStory(actor: Actor, id: number) {
     throw problem(409, "This ticket has no model link to print from — submit it again as a new request.");
   }
   // Its material may have been switched off since (or never been sliceable).
-  const srcMaterial = materialOf(src.material);
-  if (srcMaterial && !(await printableMaterials()).some((m) => m.key === srcMaterial.key)) {
+  const srcMaterial = ticketMaterial(src.material);
+  if (!srcMaterial) {
+    throw problem(409, "That print's material isn't one this app slices — submit it again as a new request.");
+  }
+  if (!(await printableMaterials()).some((m) => m.key === srcMaterial.key)) {
     throw problem(409, `${srcMaterial.label} isn't being printed right now — submit it again as a new request in another material.`);
   }
 
