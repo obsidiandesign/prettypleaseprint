@@ -5,14 +5,11 @@ import { useState, type FormEvent } from "react";
 import { createStory } from "@/app/actions/stories";
 import { QUANTITY_PRESETS } from "@/lib/catalog";
 import { postWithProgress, uploadFailure } from "@/lib/upload-client";
+import { titleFromFilename, swatchColor } from "@/lib/upload-helpers";
 import { Button, Label } from "@/components/ui";
 
 const MAX_UPLOAD_MB = 100;
-
-/** "Bracket v2 (snap fit).stl" -> "Bracket v2 (snap fit)" for the title. */
-function titleFromFilename(name: string): string {
-  return name.replace(/(\.gcode)?\.(stl|3mf)$/i, "").replace(/[_]+/g, " ").trim().slice(0, 120);
-}
+export { titleFromFilename, swatchColor };
 
 export type Spool = {
   id: number;
@@ -59,11 +56,6 @@ function Segmented<T extends string | number>({
       })}
     </div>
   );
-}
-
-/** Bambuddy's `rgba` comes back as e.g. "EBF1E0FF" — no leading `#`. */
-function swatchColor(rgba: string | null): string {
-  return rgba ? `#${rgba.replace(/^#/, "")}` : "#b6bcc2";
 }
 
 export function UploadForm({
