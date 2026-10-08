@@ -7,6 +7,16 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Added
 
+- **More than PLA: PETG, and a place for other materials.** The spool a
+  requester picks decides the material, and each material is sliced from its
+  own Slicer Pipeline (its own process, filament preset and bed type), so a
+  PETG request is not sliced with PLA's settings and nothing is re-sliced or
+  re-queued by hand. Set `BAMBUDDY_PIPELINE_PETG`, then switch PETG on at the
+  new **Materials** page; until then only PLA is offered, as before. Tickets
+  can change colour only within their material. Further materials are one row
+  in `src/lib/materials.ts` plus a pipeline. Migration adds
+  `app_settings.enabledMaterials`.
+
 - **Upload a file, and "Needs prep".** Besides a MakerWorld link, a request
   can be an uploaded `.stl` or `.3mf` (up to 100 MB, checked against its
   bytes, passed straight into Bambuddy's library — the app keeps no copy).

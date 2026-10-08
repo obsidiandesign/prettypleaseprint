@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { record } from "@/lib/audit";
 import type { Actor } from "@/lib/scope";
+import { materialPipelineId } from "@/lib/bambuddy";
+import { ALWAYS_ON, MATERIALS, materialByKey, type Material } from "@/lib/materials";
 
 /**
  * Instance-wide switches, one row in `app_settings`.
@@ -13,17 +15,30 @@ import type { Actor } from "@/lib/scope";
  * the next page load rather than after some TTL nobody remembers.
  */
 
-export type Settings = { tipJarEnabled: boolean };
+export type Settings = { tipJarEnabled: boolean; enabledMaterials: string[] };
 
-const DEFAULTS: Settings = { tipJarEnabled: false };
+const DEFAULTS: Settings = { tipJarEnabled: false, enabledMaterials: [] };
 
 /** The current settings. A missing row is the defaults — nothing seeds it. */
 export async function getSettings(): Promise<Settings> {
   const row = await db.appSettings.findUnique({
     where: { id: 1 },
-    select: { tipJarEnabled: true },
+    select: { tipJarEnabled: true, enabledMaterials: true },
   });
   return row ?? DEFAULTS;
+}
+
+/**
+ * The materials a request can be made in right now: PLA, plus each one the
+ * owner switched on *and* that has a Slicer Pipeline configured. A material
+ * with no pipeline is never offered, switched on or not, because a request in
+ * it could not be sliced.
+ */
+export async function printableMaterials(): Promise<Material[]> {
+  const { enabledMaterials } = await getSettings();
+  return MATERIALS.filter(
+    (m) => m.key === ALWAYS_ON || (enabledMaterials.includes(m.key) && materialPipelineId(m.key) > 0),
+  );
 }
 
 export class SettingsProblem extends Error {
@@ -55,4 +70,34 @@ export async function setTipJarEnabled(actor: Actor, enabled: boolean): Promise<
 
   // Everything that renders a tip, or the form that asks for one.
   for (const path of ["/admin/benefits", "/upload", "/board", "/me"]) revalidatePath(path);
+}
+
+/**
+ * Switch a material (other than PLA) on or off for new requests. Tickets
+ * already made in it keep going: this only decides what can be asked for.
+ */
+export async function setMaterialEnabled(actor: Actor, key: string, enabled: boolean): Promise<void> {
+  if (actor.role !== "admin") {
+    throw new SettingsProblem("Only the printer owner changes settings.");
+  }
+  const material = materialByKey(key);
+  if (!material || material.key === ALWAYS_ON) {
+    throw new SettingsProblem("That isn't a material that can be switched.");
+  }
+  if (enabled && materialPipelineId(material.key) <= 0) {
+    throw new SettingsProblem(`${material.label} has no Slicer Pipeline yet: set ${material.pipelineEnv} first.`);
+  }
+
+  const { enabledMaterials } = await getSettings();
+  if (enabledMaterials.includes(key) === enabled) return;
+  const next = enabled ? [...enabledMaterials, key] : enabledMaterials.filter((k) => k !== key);
+
+  await db.appSettings.upsert({
+    where: { id: 1 },
+    create: { id: 1, enabledMaterials: next },
+    update: { enabledMaterials: next },
+  });
+  await record({ action: enabled ? "material.enabled" : "material.disabled", actor, subject: material.key });
+
+  for (const path of ["/admin/materials", "/upload", "/board", "/me"]) revalidatePath(path);
 }

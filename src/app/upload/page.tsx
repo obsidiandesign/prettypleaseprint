@@ -1,9 +1,10 @@
 import { Suspense } from "react";
 
 import { printerName, requireUser } from "@/lib/authz";
-import { dedupeSpools, isPla, listSpools } from "@/lib/bambuddy";
+import { dedupeSpools, listSpools } from "@/lib/bambuddy";
+import { materialOf } from "@/lib/materials";
 import { listActiveBenefits } from "@/lib/benefits";
-import { getSettings } from "@/lib/settings";
+import { getSettings, printableMaterials } from "@/lib/settings";
 import { AppHeader } from "@/components/app-header";
 import { Kicker, Notice } from "@/components/ui";
 import { UploadForm } from "./upload-form";
@@ -74,7 +75,8 @@ async function ShelfAndForm({
   let spools: ReturnType<typeof dedupeSpools> = [];
   let inventoryError = false;
   try {
-    spools = dedupeSpools((await listSpools()).filter((s) => isPla(s.material)));
+    const printable = new Set((await printableMaterials()).map((m) => m.key));
+    spools = dedupeSpools((await listSpools()).filter((s) => printable.has(materialOf(s.material)?.key ?? "")));
   } catch {
     inventoryError = true;
   }

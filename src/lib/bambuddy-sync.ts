@@ -2,6 +2,7 @@ import "server-only";
 import type { Prisma, StoryStatus } from "@prisma/client";
 
 import { db } from "@/lib/db";
+import { materialByKey, materialOf } from "@/lib/materials";
 import { record } from "@/lib/audit";
 import { notify, printerOwner } from "@/lib/authz";
 import {
@@ -27,7 +28,7 @@ import {
   getQueueItem,
   importMakerWorldModel,
   sliceLibraryFile,
-  templatePipelineId,
+  materialPipelineId,
   resolveMakerWorldUrl,
   setManualStart,
   type FilamentRequirement,
@@ -251,21 +252,30 @@ async function recordFilaments(
 
 const NOT_SET_UP = "The printer isn't set up to slice yet — the printer owner has been told.";
 
-/** The template pipeline's settings — see `templatePipelineId`. */
-async function loadTemplate(): Promise<SlicerPipeline> {
-  const id = templatePipelineId();
+/**
+ * The settings for a ticket's material — see `materialPipelineId`. A ticket
+ * is sliced for its main spool's material; one with none recorded (a legacy
+ * row) is PLA, which is all there was.
+ */
+function materialKeyFor(spoolMaterial: string | null): string {
+  return materialOf(spoolMaterial)?.key ?? "PLA";
+}
+
+async function loadTemplate(materialKey: string): Promise<SlicerPipeline> {
+  const id = materialPipelineId(materialKey);
+  const env = materialByKey(materialKey)?.pipelineEnv ?? "BAMBUDDY_PIPELINE_ID";
   if (!id) {
-    throw new IntakeProblem(NOT_SET_UP, "No Slicer Pipeline is set as the settings template: set BAMBUDDY_PIPELINE_ID.");
+    throw new IntakeProblem(NOT_SET_UP, `No Slicer Pipeline is set for ${materialKey}: set ${env}.`);
   }
   try {
     const template = await getSlicerPipeline(id);
     if (!template.filament_presets?.[0]) {
-      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id} (the template) has no filament preset.`);
+      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id} (the ${materialKey} template) has no filament preset.`);
     }
     return template;
   } catch (error) {
     if (error instanceof BambuddyError && error.status === 404) {
-      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id}, the settings template, doesn't exist in Bambuddy.`);
+      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id}, the ${materialKey} settings template, doesn't exist in Bambuddy.`);
     }
     throw error;
   }
@@ -281,7 +291,7 @@ function hashHex(value: string | null | undefined): string {
  * file itself. The same plan is rebuilt for a re-slice, so it reads the
  * ticket's colour picks rather than anything held in memory.
  *
- * - **Filaments:** one PLA preset per slot the project defines
+ * - **Filaments:** one preset per slot the project defines, in the ticket's material
  *   (`filamentCountFor`) — a pipeline's fixed count crashed the slicer.
  * - **Designer's settings:** what Bambuddy's own "use the designer's
  *   settings" applies — every process setting the file says its designer
@@ -298,7 +308,8 @@ async function planSlice(
   storyId: number,
   libraryFileId: number,
 ): Promise<{ request: SliceRequest; printPlates: number[]; template: SlicerPipeline }> {
-  const template = await loadTemplate();
+  const story = await db.story.findUnique({ where: { id: storyId }, select: { material: true } });
+  const template = await loadTemplate(materialKeyFor(story?.material ?? null));
 
   const [slots, plates, picks] = await Promise.all([
     getFilamentSlots(libraryFileId).catch((error) => {
@@ -362,7 +373,9 @@ async function claim(storyId: number): Promise<boolean> {
   return won.count === 1;
 }
 
-type AnnounceableStory = { id: number; title: string; status: StoryStatus; uploaderId: string; quantity: number };
+type AnnounceableStory = {
+  id: number; title: string; status: StoryStatus; uploaderId: string; quantity: number; material: string | null;
+};
 
 /**
  * Queue a finished slice: one entry per plate per copy, every one created
@@ -376,7 +389,7 @@ async function queueSliced(
   printPlates: number[],
   announcedFrom: StoryStatus,
 ): Promise<void> {
-  const template = await loadTemplate();
+  const template = await loadTemplate(materialKeyFor(story.material));
   const target =
     template.target_kind === "printer" && template.target_printer_id
       ? { printer_id: template.target_printer_id }
@@ -859,7 +872,7 @@ export async function syncStory(storyId: number): Promise<void> {
   const story = await db.story.findUnique({
     where: { id: storyId },
     select: {
-      id: true, title: true, status: true, uploaderId: true, quantity: true,
+      id: true, title: true, status: true, uploaderId: true, quantity: true, material: true,
       pipelineRunId: true, queueItemId: true, intakeStartedAt: true,
       libraryFileId: true, sliceJobId: true, printPlates: true,
       queueBatchId: true, queueItemIds: true,

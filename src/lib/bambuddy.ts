@@ -1,5 +1,6 @@
 import "server-only";
 
+import { materialByKey } from "@/lib/materials";
 import { isBuildPhase } from "@/lib/runtime";
 
 /**
@@ -47,6 +48,19 @@ export function templatePipelineId(): number {
   const single = process.env.BAMBUDDY_PIPELINE_ID?.trim();
   const listed = process.env.BAMBUDDY_PIPELINES?.split(",")[0]?.trim();
   const id = Number(single || listed || bambuddyEnv("BAMBUDDY_PIPELINE_ID"));
+  return Number.isInteger(id) && id > 0 ? id : 0;
+}
+
+/**
+ * The Slicer Pipeline that holds a material's settings, or 0 when none is
+ * configured. PLA is the template above; any other material names its own
+ * pipeline in the env var `src/lib/materials.ts` lists for it, because the
+ * slicer's process, filament and bed settings differ per material.
+ */
+export function materialPipelineId(key: string): number {
+  if (key === "PLA") return templatePipelineId();
+  const name = materialByKey(key)?.pipelineEnv;
+  const id = Number(name ? process.env[name]?.trim() : "");
   return Number.isInteger(id) && id > 0 ? id : 0;
 }
 
@@ -517,16 +531,6 @@ export type Spool = {
   rgba: string | null;
   archived_at: string | null;
 };
-
-/**
- * Only PLA can be requested — the one Slicer Pipeline (see `pipelineId`) is a
- * fixed standard-PLA recipe, so any other material would slice cleanly and
- * print wrong. The intake form filters its picker with this, and
- * `createStoryFromLink` enforces it server-side.
- */
-export function isPla(material: string): boolean {
-  return material.toUpperCase().includes("PLA");
-}
 
 export async function listSpools(): Promise<Spool[]> {
   // Short: a person is waiting on the order page for this.
