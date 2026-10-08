@@ -967,7 +967,7 @@ export async function withdrawStory(actor: Actor, id: number) {
  *
  * The requester's call, or the printer owner's, until the print starts
  * (`COLOUR_EDITABLE`). Colour never affects slicing here, since every request
- * is sliced as PLA, so there is nothing to redo in Bambuddy: the owner applies
+ * is sliced for its material, which a pick cannot change, so there is nothing to redo in Bambuddy: the owner applies
  * the mapping when they start the print.
  *
  * The main slot (the most filament) must keep a real spool, because it is the

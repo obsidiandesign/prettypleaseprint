@@ -2,7 +2,7 @@ import { Suspense } from "react";
 
 import { printerName, requireUser } from "@/lib/authz";
 import { dedupeSpools, listSpools } from "@/lib/bambuddy";
-import { materialOf } from "@/lib/materials";
+import { MATERIALS, materialOf } from "@/lib/materials";
 import { listActiveBenefits } from "@/lib/benefits";
 import { getSettings, printableMaterials } from "@/lib/settings";
 import { AppHeader } from "@/components/app-header";
@@ -76,7 +76,10 @@ async function ShelfAndForm({
   let inventoryError = false;
   try {
     const printable = new Set((await printableMaterials()).map((m) => m.key));
-    spools = dedupeSpools((await listSpools()).filter((s) => printable.has(materialOf(s.material)?.key ?? "")));
+    const rank = (m: string) => MATERIALS.findIndex((x) => x.key === materialOf(m)?.key);
+    // Baseline material first: the form preselects the first spool.
+    spools = dedupeSpools((await listSpools()).filter((s) => printable.has(materialOf(s.material)?.key ?? "")))
+      .sort((a, b) => rank(a.material) - rank(b.material));
   } catch {
     inventoryError = true;
   }
