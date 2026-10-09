@@ -29,7 +29,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "auth:generate": "better-auth generate --config src/lib/auth.ts",
     "verify:lib": "tsx scripts/verify-lib.ts",
-  "verify:intake": "tsx scripts/verify-intake.ts",
+    "verify:intake": "tsx scripts/verify-intake.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
     "probe:security": "tsx scripts/security-probe.ts",
     "verify:passkey": "tsx scripts/verify-passkey.ts",
@@ -74,7 +74,8 @@
   },
   "overrides": {
     "postcss": "^8.5.26",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
+    "source-map-js": "^1.2.2",
     "deepmerge-ts": "^8.0.2"
   }
 }
