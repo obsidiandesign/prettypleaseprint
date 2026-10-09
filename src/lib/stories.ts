@@ -23,6 +23,7 @@ import { intakeNotRunning, processIntake, processPreparedFile } from "@/lib/bamb
 import { checkModelFile } from "@/lib/model-files";
 import { QuantitySchema } from "@/lib/catalog";
 import { getSettings, printableMaterials } from "@/lib/settings";
+import { isHttpUrl, isMakerWorldModelUrl } from "@/lib/url-rules";
 
 /**
  * Everything that can happen to a ticket, in one place.
@@ -97,38 +98,10 @@ export const BodySchema = z
   .min(1, "Say something first.")
   .max(2000, "That is longer than a comment wants to be.");
 
-/**
- * True only for an absolute http(s) URL. `modelUrl` is rendered as an
- * `<a href>`, so anything else — `javascript:`, `data:` — is script waiting
- * for a click. The story page checks again before linking, which also covers
- * legacy rows whose link is the empty string.
- */
-export function isHttpUrl(value: string): boolean {
-  try {
-    const { protocol } = new URL(value);
-    return protocol === "https:" || protocol === "http:";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * A MakerWorld model page — the only kind of link intake can hand to
- * Bambuddy (`resolveMakerWorldUrl`). Anything else would fail to resolve on
- * every sync pass forever, so it's refused up front instead.
- */
-export function isMakerWorldModelUrl(value: string): boolean {
-  try {
-    const { hostname, pathname } = new URL(value);
-    const host = hostname.toLowerCase();
-    const onMakerWorld = ["makerworld.com", "makerworld.com.cn"].some(
-      (site) => host === site || host.endsWith(`.${site}`),
-    );
-    return onMakerWorld && /\/models\/\d+/.test(pathname);
-  } catch {
-    return false;
-  }
-}
+// Pulled out to url-rules.ts, which has no `server-only` import, so these
+// two checks can be exercised directly in a test. Re-exported here so every
+// existing `@/lib/stories` import keeps working unchanged.
+export { isHttpUrl, isMakerWorldModelUrl } from "@/lib/url-rules";
 
 /**
  * A new request: a link, not a file. `spoolId` is the only way color and

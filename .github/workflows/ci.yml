@@ -49,6 +49,10 @@ jobs:
         run: npx prisma generate
       - name: Typecheck
         run: npx tsc --noEmit
+      # Pure-function checks — no database, no Bambuddy, no server. Cheap
+      # enough to run before any of that exists.
+      - name: Pure-function checks (scope, dedup, model-file validation)
+        run: npm run verify:lib
       # Cross-checks every tracked file against known credential shapes. In CI
       # there are no local .env files, so the value-matching pass has nothing
       # to compare against and only the pattern pass runs — which is exactly
@@ -109,6 +113,14 @@ jobs:
       - name: Point the suites at the stack
         run: npm run env:container
 
+      # Business logic against a fake Bambuddy this suite brings up itself
+      # (on its own `next dev`, pointed at the fake — the compose stack's own
+      # BAMBUDDY_URL isn't reachable here, so nothing above exercises this).
+      # Covers the exact Declined/Failed split that shipped wrong once, this
+      # time through the real HTTP/DB wiring rather than the pure function
+      # alone (see verify:lib).
+      - name: Intake and sync, against a fake Bambuddy
+        run: npm run verify:intake
       - name: Invite and sign-in flow
         run: npm run verify:auth
       - name: Admin queue, decline, flag, withdraw, re-queue

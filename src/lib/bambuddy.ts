@@ -524,40 +524,14 @@ export async function setManualStart(queueItemId: number): Promise<QueueItem> {
 // Filament inventory — for the intake form's color picker
 // ---------------------------------------------------------------------------
 
-export type Spool = {
-  id: number;
-  material: string;
-  color_name: string | null;
-  rgba: string | null;
-  archived_at: string | null;
-};
+// Pulled out to bambuddy-pure.ts, which has no `server-only` import, so
+// these can be exercised directly in a test. Re-exported here so every
+// existing `@/lib/bambuddy` import keeps working unchanged.
+export { isPla, dedupeSpools, type Spool, type SpoolGroup } from "@/lib/bambuddy-pure";
+import type { Spool } from "@/lib/bambuddy-pure";
 
 export async function listSpools(): Promise<Spool[]> {
   // Short: a person is waiting on the order page for this.
   const spools = await bambuddyFetch<Spool[]>("/api/v1/inventory/spools", undefined, 5_000);
   return spools.filter((spool) => !spool.archived_at);
-}
-
-export type SpoolGroup = Spool & { memberIds: number[] };
-
-/**
- * Collapses physical spools that are the same colour and finish (e.g. three
- * reels of "Jade White PLA Basic") into one entry, so the picker shows one
- * swatch per distinct colour+finish instead of one per reel. The first spool
- * seen in each group stands in as the representative; `memberIds` keeps every
- * id it covers, so code that cares whether a *previously chosen* spool is
- * still on the shelf can check the group rather than just the representative.
- */
-export function dedupeSpools(spools: Spool[]): SpoolGroup[] {
-  const groups = new Map<string, SpoolGroup>();
-  for (const spool of spools) {
-    const key = `${spool.color_name ?? ""} ${spool.rgba ?? ""} ${spool.material}`;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.memberIds.push(spool.id);
-    } else {
-      groups.set(key, { ...spool, memberIds: [spool.id] });
-    }
-  }
-  return [...groups.values()];
 }
