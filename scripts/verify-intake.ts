@@ -105,6 +105,7 @@ async function main() {
       BAMBUDDY_URL: fake.url,
       BAMBUDDY_API_KEY: fake.apiKey,
       BAMBUDDY_PIPELINE_ID: "1",
+      BAMBUDDY_PIPELINE_PETG: "2",
       CRON_SECRET,
       BETTER_AUTH_URL: APP,
     },
@@ -261,6 +262,140 @@ async function main() {
     check("Bambuddy was actually called for each queued batch, not short-circuited",
           [501, 502, 503, 504, 505].every((id) => fake.calls.some((c) => c.path === `/api/v1/queue/batches/${id}`)),
           JSON.stringify(fake.calls));
+
+    // -----------------------------------------------------------------
+    section("materials — PETG is the owner's switch, and slices with its own pipeline");
+
+    const shelf = [
+      { id: 1, material: "PLA Basic", color_name: "Jade White", rgba: "EBF1E0FF", archived_at: null },
+      { id: 2, material: "PETG HF", color_name: "Charcoal", rgba: "2B2B2BFF", archived_at: null },
+      { id: 3, material: "PETG HF", color_name: "Sky Blue", rgba: "3A8FD9FF", archived_at: null },
+      { id: 4, material: "PETG-CF", color_name: "Carbon", rgba: "111111FF", archived_at: null },
+    ];
+    fake.set("GET", "/api/v1/inventory/spools", () => ({ status: 200, body: shelf }));
+    const setEnabled = (materials: string[]) =>
+      db.appSettings.upsert({
+        where: { id: 1 },
+        create: { id: 1, enabledMaterials: materials },
+        update: { enabledMaterials: materials },
+      });
+    const file = (spoolId: number) => client.json<{ error?: string; story?: { id: number } }>(
+      `${APP}/api/stories`, { method: "POST", body: body(spoolId) });
+
+    await setEnabled([]);
+    const offByDefault = await file(2);
+    check("with PETG not switched on, a PETG spool is refused (400) and the refusal offers PLA",
+          offByDefault.status === 400 && /pla/i.test(offByDefault.body.error ?? "") && !/petg/i.test(offByDefault.body.error ?? ""),
+          JSON.stringify(offByDefault));
+
+    // Two pipelines that differ in everything the slicer's settings depend on.
+    const pipeline = (id: number, name: string, printerId: number, filament: string, process: string, bed: string) => ({
+      status: 200,
+      body: {
+        id, name,
+        printer_preset: { source: "cloud", id: "PRINTER_A1" },
+        process_preset: { source: "cloud", id: process },
+        filament_presets: [{ source: "cloud", id: filament }],
+        bed_type: bed,
+        target_kind: "printer", target_printer_id: printerId, target_model_class: null,
+      },
+    });
+    fake.set("GET", "/api/v1/slicer-pipelines/1", () => pipeline(1, "PLA", 11, "FIL_PLA", "PROC_PLA", "textured_pei"));
+    fake.set("GET", "/api/v1/slicer-pipelines/2", () => pipeline(2, "PETG", 22, "FIL_PETG", "PROC_PETG", "cool_plate"));
+
+    const sliced: { filament_presets: { id: string }[]; process_preset: { id: string }; bed_type: string }[] = [];
+    const queued: { printer_id?: number; manual_start?: boolean }[] = [];
+    fake.set("GET", "/api/v1/makerworld/status", () => ({ status: 200, body: { has_cloud_token: true, can_download: true } }));
+    fake.set("POST", "/api/v1/makerworld/resolve", () => ({
+      status: 200,
+      body: { model_id: 1, profile_id: null, design: { title: "A bracket" }, instances: [], already_imported_library_ids: [] },
+    }));
+    fake.set("POST", "/api/v1/makerworld/import", () => ({
+      status: 200, body: { library_file_id: 700, filename: "bracket.3mf", was_existing: false },
+    }));
+    fake.set("GET", "/api/v1/library/files/700/filament-requirements", () => ({
+      status: 200, body: { filaments: [{ slot_id: 1, type: "PLA", color: "#FFFFFF", used_grams: 0 }] },
+    }));
+    fake.set("GET", "/api/v1/library/files/700/plates", () => ({
+      status: 200, body: { is_multi_plate: false, plates: [{ index: 1, name: null }], design_overrides: [] },
+    }));
+    fake.set("POST", "/api/v1/library/files/700/slice", ({ body: raw }) => {
+      sliced.push(JSON.parse(raw));
+      return { status: 202, body: { job_id: 900 } };
+    });
+    fake.set("GET", "/api/v1/slice-jobs/900", () => ({
+      status: 200,
+      body: {
+        job_id: 900, status: "completed", completed_at: "2026-10-08T12:00:00Z",
+        result: { library_file_id: 800, print_time_seconds: 3600, filament_used_g: 12 },
+      },
+    }));
+    fake.set("POST", "/api/v1/queue/", ({ body: raw }) => {
+      queued.push(JSON.parse(raw));
+      return {
+        status: 201,
+        body: {
+          id: 1000 + queued.length, status: "pending", archive_id: null, library_file_id: 800,
+          started_at: null, completed_at: null, error_message: null, waiting_reason: null, batch_id: null,
+        },
+      };
+    });
+
+    await setEnabled(["PETG"]);
+    const pla = await file(1);
+    check("with PETG on, PLA is still filed (201)", pla.status === 201, JSON.stringify(pla));
+    check("a PLA ticket is sliced with the PLA pipeline's process, filament and bed",
+          sliced.length === 1 &&
+            sliced[0]!.process_preset.id === "PROC_PLA" &&
+            sliced[0]!.filament_presets.every((f) => f.id === "FIL_PLA") &&
+            sliced[0]!.bed_type === "textured_pei",
+          JSON.stringify(sliced));
+    check("and queued for the PLA pipeline's printer, waiting for a person",
+          queued.length === 1 && queued[0]!.printer_id === 11 && queued[0]!.manual_start === true, JSON.stringify(queued));
+
+    const petgFiled = await file(2);
+    check("with PETG on, a PETG spool is filed (201)", petgFiled.status === 201, JSON.stringify(petgFiled));
+    const petgId = petgFiled.body.story?.id;
+    const petgRow = petgId ? await db.story.findUnique({ where: { id: petgId } }) : null;
+    check("the PETG ticket records the spool's material", petgRow?.material === "PETG HF", JSON.stringify(petgRow));
+    check("a PETG ticket is sliced with the PETG pipeline's process, filament and bed — not PLA's",
+          sliced.length === 2 &&
+            sliced[1]!.process_preset.id === "PROC_PETG" &&
+            sliced[1]!.filament_presets.every((f) => f.id === "FIL_PETG") &&
+            sliced[1]!.bed_type === "cool_plate",
+          JSON.stringify(sliced[1]));
+    check("and queued for the PETG pipeline's printer, still waiting for a person",
+          queued.length === 2 && queued[1]!.printer_id === 22 && queued[1]!.manual_start === true, JSON.stringify(queued));
+    check("the ticket went on to Ready, with no manual re-slice or re-add",
+          petgRow?.status === "Ready" && petgRow?.queueItemIds.length === 1, JSON.stringify(petgRow));
+
+    const carbon = await file(4);
+    check("fibre-filled PETG is refused even with PETG on", carbon.status === 400, JSON.stringify(carbon));
+
+    // A colour change may swap spools, but never the material the ticket was sliced for.
+    const colours = (storyId: number, spoolId: number) => client.json<{ error?: string }>(
+      `${APP}/api/stories/${storyId}/colours`, { method: "PUT", body: JSON.stringify({ slots: [{ slotId: 1, spoolId }] }) });
+    const toPla = await colours(petgId!, 1);
+    check("a PETG ticket cannot be recoloured with a PLA spool (400, naming PETG)",
+          toPla.status === 400 && /petg/i.test(toPla.body.error ?? ""), JSON.stringify(toPla));
+    const toBlue = await colours(petgId!, 3);
+    check("but another PETG colour is fine", toBlue.status === 200, JSON.stringify(toBlue));
+    const recoloured = await db.story.findUnique({ where: { id: petgId! } });
+    check("and the ticket keeps its PETG material, now Sky Blue",
+          recoloured?.material === "PETG HF" && recoloured?.colorName === "Sky Blue", JSON.stringify(recoloured));
+    const plaId = pla.body.story?.id;
+    const plaToPetg = await colours(plaId!, 2);
+    check("nor can a PLA ticket be recoloured with a PETG spool", plaToPetg.status === 400, JSON.stringify(plaToPetg));
+
+    // Switching it off stops new requests; what is already made carries on.
+    await setEnabled([]);
+    const afterOff = await file(2);
+    check("switched off again, a new PETG request is refused", afterOff.status === 400, JSON.stringify(afterOff));
+    const stillEditable = await colours(petgId!, 2);
+    check("an existing PETG ticket is unaffected by the switch", stillEditable.status === 200, JSON.stringify(stillEditable));
+    check("the pipelines were each fetched from Bambuddy, not assumed",
+          fake.calls.some((c) => c.path === "/api/v1/slicer-pipelines/1") &&
+            fake.calls.some((c) => c.path === "/api/v1/slicer-pipelines/2"));
   } catch (error) {
     console.error("\n--- next dev output (tail) ---\n" + bootLog.slice(-4000));
     throw error;

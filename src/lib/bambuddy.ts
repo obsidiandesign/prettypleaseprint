@@ -527,7 +527,7 @@ export async function setManualStart(queueItemId: number): Promise<QueueItem> {
 // Pulled out to bambuddy-pure.ts, which has no `server-only` import, so
 // these can be exercised directly in a test. Re-exported here so every
 // existing `@/lib/bambuddy` import keeps working unchanged.
-export { isPla, dedupeSpools, type Spool, type SpoolGroup } from "@/lib/bambuddy-pure";
+export { dedupeSpools, type Spool, type SpoolGroup } from "@/lib/bambuddy-pure";
 import type { Spool } from "@/lib/bambuddy-pure";
 
 export async function listSpools(): Promise<Spool[]> {
