@@ -16,12 +16,13 @@ import {
   storyScope,
   type Actor,
 } from "@/lib/scope";
-import { BambuddyError, downloadLibraryFile, isPla, listSpools, uploadLibraryFile } from "@/lib/bambuddy";
+import { BambuddyError, downloadLibraryFile, listSpools, uploadLibraryFile } from "@/lib/bambuddy";
+import { listLabels, materialOf, ticketMaterial } from "@/lib/materials";
 import { activeBenefitLabels } from "@/lib/benefits";
 import { intakeNotRunning, processIntake, processPreparedFile } from "@/lib/bambuddy-sync";
 import { checkModelFile } from "@/lib/model-files";
 import { QuantitySchema } from "@/lib/catalog";
-import { getSettings } from "@/lib/settings";
+import { getSettings, printableMaterials } from "@/lib/settings";
 import { isHttpUrl, isMakerWorldModelUrl } from "@/lib/url-rules";
 
 /**
@@ -857,9 +858,11 @@ async function checkWish(input: { tip?: string; spoolId: number }) {
   if (!spool) {
     throw problem(409, "That color isn't available any more — refresh and pick again.");
   }
-  if (!isPla(spool.material)) {
-    // The picker only offers PLA, but the API takes any spool id.
-    throw problem(400, "Only PLA can be printed here — pick a PLA color.");
+  const printable = await printableMaterials();
+  const material = materialOf(spool.material);
+  if (!material || !printable.some((m) => m.key === material.key)) {
+    // The picker only offers what can be printed, but the API takes any spool id.
+    throw problem(400, `Only ${listLabels(printable)} can be printed here — pick a ${listLabels(printable)} color.`);
   }
   return { tip, spool };
 }
@@ -937,7 +940,7 @@ export async function withdrawStory(actor: Actor, id: number) {
  *
  * The requester's call, or the printer owner's, until the print starts
  * (`COLOUR_EDITABLE`). Colour never affects slicing here, since every request
- * is sliced as PLA, so there is nothing to redo in Bambuddy: the owner applies
+ * is sliced for its material, which a pick cannot change, so there is nothing to redo in Bambuddy: the owner applies
  * the mapping when they start the print.
  *
  * The main slot (the most filament) must keep a real spool, because it is the
@@ -953,7 +956,7 @@ export async function setStoryColours(actor: Actor, id: number, raw: unknown) {
   const story = await db.story.findFirst({
     where: { AND: [{ id }, storyScope(actor)] },
     select: {
-      id: true, title: true, status: true, uploaderId: true,
+      id: true, title: true, status: true, uploaderId: true, material: true,
       filaments: {
         select: { slotId: true },
         orderBy: [{ usedGrams: "desc" }, { slotId: "asc" }],
@@ -985,13 +988,22 @@ export async function setStoryColours(actor: Actor, id: number, raw: unknown) {
     throw problem(503, "Can't reach the printer's inventory right now — try again in a minute.");
   }
 
+  // The slicer's settings follow the ticket's material, so a colour change
+  // may only swap one spool for another of the same material.
+  const sliceMaterial = ticketMaterial(story.material);
+  if (!sliceMaterial) {
+    throw problem(409, `${storyRef(story.id)} is in a material this app doesn't slice; its colours can't be changed here.`);
+  }
+
   const updates = parsed.data.slots.map((pick) => {
     if (pick.spoolId === null) {
       return { slotId: pick.slotId, data: { spoolId: null, material: null, colorName: null, colorHex: null } };
     }
     const spool = spools.find((s) => s.id === pick.spoolId);
     if (!spool) throw problem(409, "One of those colours isn't available any more — refresh and pick again.");
-    if (!isPla(spool.material)) throw problem(400, "Only PLA can be printed here — pick a PLA colour.");
+    if (materialOf(spool.material)?.key !== sliceMaterial.key) {
+      throw problem(400, `This ticket is sliced for ${sliceMaterial.label} — pick a ${sliceMaterial.label} colour.`);
+    }
     return {
       slotId: pick.slotId,
       data: {
@@ -1072,6 +1084,14 @@ export async function requeueStory(actor: Actor, id: number) {
   const fromFile = (src.sourceFilename !== null || src.preparedFilename !== null) && src.libraryFileId !== null;
   if (!fromFile && !isHttpUrl(src.modelUrl)) {
     throw problem(409, "This ticket has no model link to print from — submit it again as a new request.");
+  }
+  // Its material may have been switched off since (or never been sliceable).
+  const srcMaterial = ticketMaterial(src.material);
+  if (!srcMaterial) {
+    throw problem(409, "That print's material isn't one this app slices — submit it again as a new request.");
+  }
+  if (!(await printableMaterials()).some((m) => m.key === srcMaterial.key)) {
+    throw problem(409, `${srcMaterial.label} isn't being printed right now — submit it again as a new request in another material.`);
   }
 
   const created = await db.story.create({

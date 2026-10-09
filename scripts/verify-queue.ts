@@ -21,7 +21,8 @@ let passed = 0;
 const failures: string[] = [];
 function check(name: string, ok: boolean, detail = "") {
   console.info(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok || !detail ? "" : `\n          ${detail}`}`);
-  ok ? passed++ : failures.push(name);
+  if (ok) passed++;
+  else failures.push(name);
 }
 const section = (t: string) =>
   console.info(`\n── ${t} ${"─".repeat(Math.max(0, 54 - t.length))}`);
@@ -292,7 +293,7 @@ async function main() {
   await client.submit(`${APP}/story/${talk.id}`, talkPage, sayIdx, {
     body: "Slate if you have it, otherwise anything dark.",
   });
-  let thread = await db.comment.findMany({ where: { storyId: talk.id } });
+  const thread = await db.comment.findMany({ where: { storyId: talk.id } });
   check("the comment is stored", thread.length === 1, `${thread.length} comments`);
   check("attributed to the client", thread[0]?.authorId === ayla.id);
   check("and the printer owner is told",

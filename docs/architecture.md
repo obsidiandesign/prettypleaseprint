@@ -65,11 +65,17 @@ twice.
   from the spool, never from the request. They are copied onto the row on
   purpose, so the ticket keeps showing what was asked for after that spool is
   archived or restocked.
-- **PLA only.** Every request is sliced with the template pipeline's PLA
-  preset (see [Slicing and queueing](#slicing-and-queueing)). Colour picks a
-  spool, never a material, so a PETG spool would
-  slice cleanly and print wrong. The picker filters to PLA and the server
-  refuses anything else, because the API takes any spool id.
+- **PLA, and any other material the owner has switched on.** The spool picked
+  decides the ticket's material (`materialOf`, `src/lib/materials.ts`), and each
+  material is sliced with its own template pipeline, because the slicer's
+  process, filament and bed settings differ per filament: PLA from
+  `BAMBUDDY_PIPELINE_ID`, PETG from `BAMBUDDY_PIPELINE_PETG`. The owner switches
+  a material on at `/admin/materials` (`app_settings.enabledMaterials`); it is
+  offered only if it is on *and* its pipeline is set. PLA is always on. The
+  picker filters to what is printable and the server refuses anything else,
+  because the API takes any spool id. A colour change after the ticket exists
+  may only swap spools of the ticket's own material, so the settings it was
+  sliced with stay right.
 - Quantity, a needed-by date and a free-text note, as before.
 
 A tip, if the owner has the tip jar switched on — see
@@ -171,8 +177,8 @@ grows a *Colours* panel to pick a spool per slot. Picks made after slicing
 don't re-slice: the colours written into the sliced file are only labels, and
 which spool feeds which part is the owner's AMS mapping when they start the
 print. Colour can change until the
-print starts (`COLOUR_EDITABLE`), because every request is sliced as PLA:
-colour never changes the slicing, only which AMS slot feeds which part when
+print starts (`COLOUR_EDITABLE`), because a ticket is sliced for its material, and a pick may only swap
+spools of that material: colour never changes the slicing, only which AMS slot feeds which part when
 the owner starts the print in Bambuddy. The queue's *Ready to print* list
 shows that mapping so the owner can apply it. More colours than the AMS holds
 (`AMS_SLOTS`, 4) is flagged to the owner rather than refused.
@@ -254,8 +260,10 @@ Without it, a ticket whose slice takes longer than intake's short wait stays
   is real work this app does not do yet, so withdraw is `Requested`/`Declined`
   only and decline is `Requested` only. Past that, the requester asks the owner,
   and the owner cancels in Bambuddy.
-- **One pipeline, one material.** A second material means a second pipeline and
-  a way to choose between them; nothing here pretends otherwise.
+- **One pipeline per material.** A new material is a row in
+  `src/lib/materials.ts`, a pipeline in Bambuddy and an env var. A plate that
+  mixes materials is not supported: colours after the first must be the
+  ticket's material.
 - **The owner's review happens in Bambuddy.** The queue page lists `Ready`
   tickets and those that need a look, but starting a print is done in Bambuddy's
   own UI, on purpose: this app's key cannot start one.

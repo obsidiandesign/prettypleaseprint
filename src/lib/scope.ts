@@ -158,8 +158,8 @@ export function queueOutcome(c: QueueCounts): { status: StoryStatus; note: strin
 
 /**
  * While the requester can still change a ticket's colours: up to the moment
- * the print starts. Every request is sliced as PLA, so colour never affects
- * slicing; it only matters when the owner maps slots to the AMS in Bambuddy.
+ * the print starts. A ticket is sliced for its material, which a colour
+ * change can't alter, so colour never affects slicing; it only matters when the owner maps slots to the AMS in Bambuddy.
  */
 export const COLOUR_EDITABLE: readonly StoryStatus[] = ["Requested", "Prep", "Slicing", "Ready"];
 

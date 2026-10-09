@@ -90,8 +90,8 @@ too.
   again before rendering a link, which also covers legacy rows.
 - **Client-chosen colour and material (A08).** The form sends a `spoolId`
   only. The server looks it up in Bambuddy's live inventory, refuses a spool
-  that is gone or is not PLA, and copies the material and colour from the
-  spool. A posted `material`, `colorName` or `status` never reaches the row.
+  that is gone or whose material the owner has not switched on, and copies the
+  material and colour from the spool. A posted `material`, `colorName` or `status` never reaches the row.
 - **Races between a person and the sync (A04), fixed in review.** Intake
   claims a story atomically before calling Bambuddy, so a cron tick cannot
   import it a second time. Decline and withdraw are conditional on that claim

@@ -1,9 +1,10 @@
 import { Suspense } from "react";
 
 import { printerName, requireUser } from "@/lib/authz";
-import { dedupeSpools, isPla, listSpools } from "@/lib/bambuddy";
+import { dedupeSpools, listSpools } from "@/lib/bambuddy";
+import { MATERIALS, materialOf } from "@/lib/materials";
 import { listActiveBenefits } from "@/lib/benefits";
-import { getSettings } from "@/lib/settings";
+import { getSettings, printableMaterials } from "@/lib/settings";
 import { AppHeader } from "@/components/app-header";
 import { Kicker, Notice } from "@/components/ui";
 import { UploadForm } from "./upload-form";
@@ -31,7 +32,7 @@ export default async function UploadPage({
             Pretty please print
           </h1>
           <p className="m-0 mb-[26.4px] text-[16.5px] leading-[1.5] text-ink-2 text-pretty">
-            Paste a link to the model's MakerWorld page. {owner}
+            Paste a link to the model&rsquo;s MakerWorld page. {owner}
             {" "}gets a ping, it slices on its own, and your order goes up on
             the rail as a ticket you can follow.
           </p>
@@ -74,7 +75,15 @@ async function ShelfAndForm({
   let spools: ReturnType<typeof dedupeSpools> = [];
   let inventoryError = false;
   try {
-    spools = dedupeSpools((await listSpools()).filter((s) => isPla(s.material)));
+    const printable = new Set((await printableMaterials()).map((m) => m.key));
+    // Baseline material first, colours alphabetical within each material (the
+    // sort is stable, and dedupeSpools has already ordered the colours): the
+    // form preselects the first spool, and that should be PLA, not whichever
+    // material sorts first by name.
+    const rank = (spoolMaterial: string) => MATERIALS.findIndex((m) => m.key === materialOf(spoolMaterial)?.key);
+    spools = dedupeSpools((await listSpools()).filter((s) => printable.has(materialOf(s.material)?.key ?? ""))).sort(
+      (a, b) => rank(a.material) - rank(b.material),
+    );
   } catch {
     inventoryError = true;
   }

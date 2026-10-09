@@ -37,7 +37,7 @@ function Swatch({ hex, label }: { hex: string | null; label: string }) {
  * A multi-colour model's colours, on its ticket.
  *
  * One row per colour the model uses, main part first: the designer's colour
- * (a hint, since every request prints in PLA from what's on the shelf) and
+ * (a hint, since a request prints in the ticket's material, from what's on the shelf) and
  * what will actually be used. With `spools`, it's also the form to change
  * them; without, it's read-only (the print has started, the viewer isn't the
  * requester or the owner, or Bambuddy's inventory couldn't be read).

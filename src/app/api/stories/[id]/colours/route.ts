@@ -7,8 +7,7 @@ import { getStory, setStoryColours, storyIdOr400 } from "@/lib/stories";
  * choice". Slots left out stay as they are.
  *
  * The requester's, or the printer owner's, until the print starts. Spools are
- * checked against live inventory and must be PLA, exactly as on the order
- * form. The rules are `setStoryColours`'s, shared with the ticket page.
+ * checked against live inventory and must be the ticket's own material. The rules are `setStoryColours`'s, shared with the ticket page.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

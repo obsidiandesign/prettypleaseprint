@@ -1,5 +1,6 @@
 import "server-only";
 
+import { materialByKey } from "@/lib/materials";
 import { isBuildPhase } from "@/lib/runtime";
 
 /**
@@ -47,6 +48,19 @@ export function templatePipelineId(): number {
   const single = process.env.BAMBUDDY_PIPELINE_ID?.trim();
   const listed = process.env.BAMBUDDY_PIPELINES?.split(",")[0]?.trim();
   const id = Number(single || listed || bambuddyEnv("BAMBUDDY_PIPELINE_ID"));
+  return Number.isInteger(id) && id > 0 ? id : 0;
+}
+
+/**
+ * The Slicer Pipeline that holds a material's settings, or 0 when none is
+ * configured. PLA is the template above; any other material names its own
+ * pipeline in the env var `src/lib/materials.ts` lists for it, because the
+ * slicer's process, filament and bed settings differ per material.
+ */
+export function materialPipelineId(key: string): number {
+  if (key === "PLA") return templatePipelineId();
+  const name = materialByKey(key)?.pipelineEnv;
+  const id = Number(name ? process.env[name]?.trim() : "");
   return Number.isInteger(id) && id > 0 ? id : 0;
 }
 
@@ -513,7 +527,7 @@ export async function setManualStart(queueItemId: number): Promise<QueueItem> {
 // Pulled out to bambuddy-pure.ts, which has no `server-only` import, so
 // these can be exercised directly in a test. Re-exported here so every
 // existing `@/lib/bambuddy` import keeps working unchanged.
-export { isPla, dedupeSpools, type Spool, type SpoolGroup } from "@/lib/bambuddy-pure";
+export { dedupeSpools, type Spool, type SpoolGroup } from "@/lib/bambuddy-pure";
 import type { Spool } from "@/lib/bambuddy-pure";
 
 export async function listSpools(): Promise<Spool[]> {

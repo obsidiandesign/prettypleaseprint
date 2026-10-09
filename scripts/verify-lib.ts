@@ -26,7 +26,16 @@ import {
   queueOutcome,
   type Actor,
 } from "../src/lib/scope";
-import { dedupeSpools, isPla, type Spool } from "../src/lib/bambuddy-pure";
+import { dedupeSpools, type Spool } from "../src/lib/bambuddy-pure";
+import {
+  ALWAYS_ON,
+  MATERIALS,
+  listLabels,
+  materialByKey,
+  materialOf,
+  ticketMaterial,
+  type Material,
+} from "../src/lib/materials";
 import { quantityText, relativeTime } from "../src/lib/catalog";
 import { checkModelFile, safeModelFilename } from "../src/lib/model-files";
 import { isHttpUrl, isMakerWorldModelUrl } from "../src/lib/url-rules";
@@ -47,11 +56,52 @@ function throws(fn: () => void): boolean {
 }
 
 // ---------------------------------------------------------------------------
-section("isPla — only PLA can be requested");
-check("a Basic PLA spool counts", isPla("PLA Basic"));
-check("case doesn't matter", isPla("pla matte"));
-check("PETG does not", !isPla("PETG"));
-check("PLA-CF counts (contains PLA)", isPla("PLA-CF"));
+section("materialOf — which recipe a spool's free-text material belongs to");
+const keyOf = (m: string | null | undefined) => materialOf(m)?.key ?? null;
+check("a Basic PLA spool is PLA", keyOf("PLA Basic") === "PLA");
+check("case doesn't matter", keyOf("pla matte") === "PLA" && keyOf("petg hf") === "PETG");
+check("the PLA finishes people actually stock are all PLA",
+      ["PLA Matte", "PLA Silk", "PLA Tough", "PLA Translucent", "PLA+"].every((m) => keyOf(m) === "PLA"));
+check("plain PETG and its common variants are PETG",
+      ["PETG", "PETG HF", "PETG Translucent", "Bambu PETG Basic"].every((m) => keyOf(m) === "PETG"));
+check("PLA-CF still counts as PLA (the pre-materials behaviour, kept on purpose)", keyOf("PLA-CF") === "PLA");
+check("fibre-filled PETG is NOT PETG, however it is spelled — it needs a hardened nozzle",
+      ["PETG-CF", "PETG CF", "PETG-CF10", "PETGCF", "PETG-GF", "PETG Carbon", "PETG Glass Fibre", "petg-cf"]
+        .every((m) => keyOf(m) === null),
+      JSON.stringify(["PETG-CF", "PETGCF", "PETG-CF10"].map(keyOf)));
+check("a material we don't slice matches nothing", keyOf("TPU 95A") === null && keyOf("ABS") === null);
+check("nothing recorded matches nothing", keyOf("") === null && keyOf(null) === null && keyOf(undefined) === null);
+
+// ---------------------------------------------------------------------------
+section("ticketMaterial — what a ticket is sliced for");
+check("a ticket from before materials (none recorded) is PLA, as every one was",
+      ticketMaterial(null)?.key === "PLA" && ticketMaterial("")?.key === "PLA");
+check("a recorded PETG ticket is PETG", ticketMaterial("PETG HF")?.key === "PETG");
+check("a recorded material we don't slice is undefined — never guessed to be PLA",
+      ticketMaterial("TPU 95A") === undefined && ticketMaterial("PETG-CF") === undefined);
+
+// ---------------------------------------------------------------------------
+section("the material registry");
+check("keys are unique", new Set(MATERIALS.map((m) => m.key)).size === MATERIALS.length);
+check("each material has its own pipeline env var",
+      new Set(MATERIALS.map((m) => m.pipelineEnv)).size === MATERIALS.length);
+check("PLA is first — the order form lists materials in this order and preselects the first",
+      MATERIALS[0]?.key === "PLA");
+check("the always-on material is PLA and is in the registry", ALWAYS_ON === "PLA" && materialByKey(ALWAYS_ON) !== undefined);
+check("PLA keeps the original BAMBUDDY_PIPELINE_ID variable, so existing installs don't change",
+      materialByKey("PLA")?.pipelineEnv === "BAMBUDDY_PIPELINE_ID");
+check("an unknown key is not a material", materialByKey("UNOBTAINIUM") === undefined);
+check("no material claims another's spools",
+      ["PLA Basic", "PETG HF", "PETG", "PLA Matte"].every(
+        (name) => MATERIALS.filter((m) => m.matches(name)).length === 1,
+      ));
+
+const named = (label: string): Material => ({ key: label, label, pipelineEnv: label, matches: () => false });
+check("listLabels reads naturally for one, two and three",
+      listLabels([]) === "" &&
+        listLabels([named("PLA")]) === "PLA" &&
+        listLabels([named("PLA"), named("PETG")]) === "PLA or PETG" &&
+        listLabels([named("PLA"), named("PETG"), named("TPU")]) === "PLA, PETG or TPU");
 
 // ---------------------------------------------------------------------------
 section("dedupeSpools — one swatch per colour+finish, not per reel");
