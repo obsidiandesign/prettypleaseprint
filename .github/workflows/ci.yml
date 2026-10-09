@@ -82,6 +82,12 @@ jobs:
         run: |
           PGPASSWORD=ci-only-not-a-secret psql -h localhost -U ppp -d ppp -c 'CREATE DATABASE ppp_shadow'
           npm run check:migrations
+      # Every environment variable the code reads is in the README table and in
+      # every example env file, nothing documented is unused, and prose that
+      # still says "only PLA" fails. None of that breaks a typecheck or a
+      # suite; it breaks the person deploying from the docs.
+      - name: Configuration is documented
+        run: npm run check:config-docs
       # Pure-function checks — no database, no Bambuddy, no server. Cheap
       # enough to run before any of that exists.
       - name: Pure-function checks (scope, dedup, model-file validation)

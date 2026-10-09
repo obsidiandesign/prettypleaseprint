@@ -162,6 +162,9 @@ with commentary is [`.env.docker.example`](.env.docker.example).
 | `PASSKEY_RP_NAME` | | Shown in the browser's passkey prompt. |
 | `ADMIN_EMAIL` / `ADMIN_NAME` | **yes** | The single admin, created on first start. |
 | `DATA_ROOT` | | Where the database lives on disk. Default `./data`. |
+| `APP_PORT` | | The host port the app is published on, for local testing (`docker-compose.test.yml`). Default `3000`. A deployment publishes no ports; the proxy reaches it. |
+| `PPP_PROXY_NETWORK` | | The Docker network your reverse proxy is on, which the proxy overlay joins the app to. It must already exist. |
+| `PPP_BAMBUDDY_NETWORK` / `PPP_BAMBUDDY_NET_IP` | | Unraid only, and only if Bambuddy is on its own VLAN: that network's name and a free address on it for the app. See [Bambuddy on another VLAN](docs/unraid.md#bambuddy-on-another-vlan). |
 | `SMTP_URL` | | SMTP transport. **Leave unset and the app still works** — links are shown to the admin to hand over. |
 | `RESEND_API_KEY` | | Alternative to `SMTP_URL`; takes precedence. |
 | `MAIL_FROM` | | Envelope sender. |

@@ -138,7 +138,7 @@ async function main() {
     console.info(`  admin=${admin.email}  client=${ayla.email}`);
 
     // -----------------------------------------------------------------
-    section("POST /api/stories — only a PLA spool actually on the shelf");
+    section("POST /api/stories — only a spool that is on the shelf and printable");
     const body = (spoolId: number) => JSON.stringify({
       title: "A test bracket", modelUrl: "https://makerworld.com/en/models/1-a-bracket",
       spoolId, quantity: 1,
@@ -152,8 +152,8 @@ async function main() {
       ],
     }));
     const petg = await client.json<{ error?: string }>(`${APP}/api/stories`, { method: "POST", body: body(2) });
-    check("a non-PLA spool is refused with 400", petg.status === 400, JSON.stringify(petg));
-    check("naming only PLA in the refusal", (petg.body.error ?? "").toLowerCase().includes("pla"), petg.body.error ?? "");
+    check("a spool whose material is not switched on is refused with 400", petg.status === 400, JSON.stringify(petg));
+    check("and the refusal names what can be printed", (petg.body.error ?? "").toLowerCase().includes("pla"), petg.body.error ?? "");
 
     const unknown = await client.json<{ error?: string }>(`${APP}/api/stories`, { method: "POST", body: body(999) });
     check("an unknown spool id is refused with 409 (stale picker)", unknown.status === 409, JSON.stringify(unknown));

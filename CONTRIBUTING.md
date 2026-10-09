@@ -20,7 +20,8 @@ npm run probe:security    # OWASP-mapped probes
 ```
 
 Plus the cheap gates: `npm run typecheck`, `npm run lint` (zero warnings),
-`npm run check:secrets -- --all`, `npm run check:links`, and
+`npm run check:secrets -- --all`, `npm run check:links`,
+`npm run check:config-docs` (new environment variables are documented), and
 `npm run check:migrations` (needs `SHADOW_DATABASE_URL`, an empty scratch
 database that is wiped on every run).
 

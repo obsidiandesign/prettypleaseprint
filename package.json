@@ -36,6 +36,7 @@
     "check:secrets": "tsx scripts/check-secrets.ts",
     "check:links": "tsx scripts/check-links.ts",
     "check:migrations": "tsx scripts/check-migrations.ts",
+    "check:config-docs": "tsx scripts/check-config-docs.ts",
     "hooks:install": "git config core.hooksPath .githooks && echo \"pre-commit hook active\"",
     "shots": "tsx scripts/screenshot.ts",
     "env:container": "tsx scripts/use-container-env.ts",

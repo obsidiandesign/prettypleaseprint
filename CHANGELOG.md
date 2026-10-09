@@ -35,8 +35,9 @@ Notable changes. Every entry names a released version; deployments pin
   using the most filament; a model with more colours asks the requester to
   pick the rest on the ticket, from what is on the shelf, or leave them as
   the printer owner's choice. Colours can change until the print starts,
-  since every request is sliced as PLA and colour only matters when the
-  owner maps slots to the AMS in Bambuddy. The queue's *Ready to print* list
+  since a ticket is sliced for its material (a pick can only swap spools of
+  that material) and colour only matters when the owner maps slots to the AMS
+  in Bambuddy. The queue's *Ready to print* list
   shows that mapping. A model needing more colours than the AMS holds (4) is
   flagged. Also `PUT /api/stories/{id}/colours`, and `colours` on every
   ticket in the API. Single-colour models look exactly as before.
