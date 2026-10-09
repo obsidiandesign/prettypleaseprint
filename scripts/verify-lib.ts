@@ -74,6 +74,20 @@ const nullish = dedupeSpools([
   { id: 10, material: "PLA Basic", color_name: null, rgba: null, archived_at: null },
 ]);
 check("null colour/rgba still groups consistently rather than throwing", nullish.length === 1);
+// The actual bug report: two reels that read as the same colour to a
+// person didn't dedupe because the strings didn't match byte-for-byte —
+// a spool added by hand next to one the AMS auto-detected, say.
+const messy = dedupeSpools([
+  { id: 20, material: "PLA Basic", color_name: "Jade White", rgba: "ebf1e0ff", archived_at: null },
+  { id: 21, material: " pla basic ", color_name: " Jade White ", rgba: "EBF1E0FF", archived_at: null },
+]);
+check("mismatched case and stray whitespace still collapse to one group — THE repeat-filament bug",
+      messy.length === 1 && messy[0]?.memberIds.length === 2, JSON.stringify(messy));
+check("the picker lists colours alphabetically, not in whatever order Bambuddy returned them",
+      grouped.map((g) => g.color_name).join(",") === "Charcoal,Jade White,Jade White",
+      grouped.map((g) => g.color_name).join(","));
+check("and within one colour, by finish",
+      grouped.filter((g) => g.color_name === "Jade White").map((g) => g.material).join(",") === "PLA Basic,PLA Matte");
 
 // ---------------------------------------------------------------------------
 section("filamentCountFor — the slicer crash's root cause");
