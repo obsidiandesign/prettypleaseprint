@@ -2,6 +2,7 @@ import "server-only";
 import type { Prisma, StoryStatus } from "@prisma/client";
 
 import { db } from "@/lib/db";
+import { materialByKey, ticketMaterial } from "@/lib/materials";
 import { record } from "@/lib/audit";
 import { notify, printerOwner } from "@/lib/authz";
 import {
@@ -27,7 +28,7 @@ import {
   getQueueItem,
   importMakerWorldModel,
   sliceLibraryFile,
-  templatePipelineId,
+  materialPipelineId,
   resolveMakerWorldUrl,
   setManualStart,
   type FilamentRequirement,
@@ -251,21 +252,37 @@ async function recordFilaments(
 
 const NOT_SET_UP = "The printer isn't set up to slice yet — the printer owner has been told.";
 
-/** The template pipeline's settings — see `templatePipelineId`. */
-async function loadTemplate(): Promise<SlicerPipeline> {
-  const id = templatePipelineId();
+/**
+ * The settings for a ticket's material — see `materialPipelineId`. A ticket
+ * is sliced for its main spool's material; one with none recorded (a legacy
+ * row) is PLA, which is all there was.
+ */
+function materialKeyFor(spoolMaterial: string | null): string {
+  const material = ticketMaterial(spoolMaterial);
+  if (!material) {
+    throw new IntakeProblem(
+      NOT_SET_UP,
+      `The ticket's material “${spoolMaterial}” isn't one this app slices; not guessing a recipe for it.`,
+    );
+  }
+  return material.key;
+}
+
+async function loadTemplate(materialKey: string): Promise<SlicerPipeline> {
+  const id = materialPipelineId(materialKey);
+  const env = materialByKey(materialKey)?.pipelineEnv ?? "BAMBUDDY_PIPELINE_ID";
   if (!id) {
-    throw new IntakeProblem(NOT_SET_UP, "No Slicer Pipeline is set as the settings template: set BAMBUDDY_PIPELINE_ID.");
+    throw new IntakeProblem(NOT_SET_UP, `No Slicer Pipeline is set for ${materialKey}: set ${env}.`);
   }
   try {
     const template = await getSlicerPipeline(id);
     if (!template.filament_presets?.[0]) {
-      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id} (the template) has no filament preset.`);
+      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id} (the ${materialKey} template) has no filament preset.`);
     }
     return template;
   } catch (error) {
     if (error instanceof BambuddyError && error.status === 404) {
-      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id}, the settings template, doesn't exist in Bambuddy.`);
+      throw new IntakeProblem(NOT_SET_UP, `Slicer Pipeline ${id}, the ${materialKey} settings template, doesn't exist in Bambuddy.`);
     }
     throw error;
   }
@@ -281,7 +298,7 @@ function hashHex(value: string | null | undefined): string {
  * file itself. The same plan is rebuilt for a re-slice, so it reads the
  * ticket's colour picks rather than anything held in memory.
  *
- * - **Filaments:** one PLA preset per slot the project defines
+ * - **Filaments:** one preset per slot the project defines, in the ticket's material
  *   (`filamentCountFor`) — a pipeline's fixed count crashed the slicer.
  * - **Designer's settings:** what Bambuddy's own "use the designer's
  *   settings" applies — every process setting the file says its designer
@@ -296,9 +313,10 @@ function hashHex(value: string | null | undefined): string {
  */
 async function planSlice(
   storyId: number,
+  material: string | null,
   libraryFileId: number,
 ): Promise<{ request: SliceRequest; printPlates: number[]; template: SlicerPipeline }> {
-  const template = await loadTemplate();
+  const template = await loadTemplate(materialKeyFor(material));
 
   const [slots, plates, picks] = await Promise.all([
     getFilamentSlots(libraryFileId).catch((error) => {
@@ -341,8 +359,8 @@ async function planSlice(
 }
 
 /** Plan and start a slice; the caller records `sliceJobId`. */
-async function startSlice(storyId: number, libraryFileId: number) {
-  const plan = await planSlice(storyId, libraryFileId);
+async function startSlice(story: { id: number; material: string | null }, libraryFileId: number) {
+  const plan = await planSlice(story.id, story.material, libraryFileId);
   const { job_id } = await sliceLibraryFile(libraryFileId, plan.request);
   return { jobId: job_id, printPlates: plan.printPlates };
 }
@@ -362,7 +380,9 @@ async function claim(storyId: number): Promise<boolean> {
   return won.count === 1;
 }
 
-type AnnounceableStory = { id: number; title: string; status: StoryStatus; uploaderId: string; quantity: number };
+type AnnounceableStory = {
+  id: number; title: string; status: StoryStatus; uploaderId: string; quantity: number; material: string | null;
+};
 
 /**
  * Queue a finished slice: one entry per plate per copy, every one created
@@ -376,7 +396,7 @@ async function queueSliced(
   printPlates: number[],
   announcedFrom: StoryStatus,
 ): Promise<void> {
-  const template = await loadTemplate();
+  const template = await loadTemplate(materialKeyFor(story.material));
   const target =
     template.target_kind === "printer" && template.target_printer_id
       ? { printer_id: template.target_printer_id }
@@ -458,7 +478,6 @@ async function queueProgress(story: { queueBatchId: number | null; queueItemIds:
 const INTAKE_SLICE_POLLS = 7;
 const INTAKE_SLICE_POLL_MS = 3000;
 
-const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
 
 /** What intake and prep read about a story. */
 const INTAKE_FIELDS = {
@@ -526,7 +545,7 @@ async function fromLibraryFile(
   }
   await recordFilaments(story, slots);
 
-  const slice = await startSlice(story.id, libraryFileId);
+  const slice = await startSlice(story, libraryFileId);
   const moved = await db.story.updateMany({
     where: { id: story.id, status: announcedFrom },
     data: { sliceJobId: slice.jobId, printPlates: slice.printPlates, status: "Slicing", errorMessage: null },
@@ -704,7 +723,7 @@ export async function processIntake(storyId: number): Promise<void> {
       }
       await recordFilaments(story, slots);
 
-      const slice = await startSlice(story.id, imported.library_file_id);
+      const slice = await startSlice(story, imported.library_file_id);
 
       // Record the handoff the moment the slice job exists. From here on the
       // story belongs to `syncStory`: it queues the result, or slices again if
@@ -859,7 +878,7 @@ export async function syncStory(storyId: number): Promise<void> {
   const story = await db.story.findUnique({
     where: { id: storyId },
     select: {
-      id: true, title: true, status: true, uploaderId: true, quantity: true,
+      id: true, title: true, status: true, uploaderId: true, quantity: true, material: true,
       pipelineRunId: true, queueItemId: true, intakeStartedAt: true,
       libraryFileId: true, sliceJobId: true, printPlates: true,
       queueBatchId: true, queueItemIds: true,
@@ -900,7 +919,7 @@ export async function syncStory(storyId: number): Promise<void> {
         // minutes ago without this pass seeing it. Nothing was queued from
         // it, so slicing again is safe; at worst the library keeps a spare
         // sliced file.
-        const slice = await startSlice(story.id, story.libraryFileId!);
+        const slice = await startSlice(story, story.libraryFileId!);
         await db.story.update({
           where: { id: story.id },
           data: { sliceJobId: slice.jobId, printPlates: slice.printPlates, intakeStartedAt: null },

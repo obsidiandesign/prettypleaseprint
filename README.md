@@ -154,6 +154,7 @@ with commentary is [`.env.docker.example`](.env.docker.example).
 | `DB_PASSWORD` | **yes** | Postgres password. Baked into the data directory on first start — see [Restore](#restore). |
 | `BAMBUDDY_URL` | **yes** | Bambuddy's address on the LAN, e.g. `http://192.168.1.20:8000`. Never a public URL. |
 | `BAMBUDDY_API_KEY` | **yes** | A Bambuddy API key with **Manage Library + Manage Queue** only — no Control Printer — ideally on a dedicated service account. |
+| `BAMBUDDY_PIPELINE_PETG` | no | A second Slicer Pipeline holding the PETG recipe (process, PETG filament preset, bed). With it set, the owner can switch PETG on at `/admin/materials`; requests then slice with it whenever the picked spool is PETG. |
 | `BAMBUDDY_PIPELINE_ID` | **yes** | The Slicer Pipeline used as a settings template (printer, process, bed, PLA filament, target printer). The app slices each request itself from it — see [Bambuddy and the sync](docs/deployment.md#bambuddy-and-the-sync). |
 | `CRON_SECRET` | **yes** | Bearer secret for `POST /api/cron/sync`. `openssl rand -base64 32`. Unset, the sync refuses every call. |
 | `APP_URL` | **yes** | The origin the browser sees, including scheme. Cookies, invitation links and the WebAuthn relying party derive from it. Must be `https://` in production. |
@@ -161,6 +162,9 @@ with commentary is [`.env.docker.example`](.env.docker.example).
 | `PASSKEY_RP_NAME` | | Shown in the browser's passkey prompt. |
 | `ADMIN_EMAIL` / `ADMIN_NAME` | **yes** | The single admin, created on first start. |
 | `DATA_ROOT` | | Where the database lives on disk. Default `./data`. |
+| `APP_PORT` | | The host port the app is published on, for local testing (`docker-compose.test.yml`). Default `3000`. A deployment publishes no ports; the proxy reaches it. |
+| `PPP_PROXY_NETWORK` | | The Docker network your reverse proxy is on, which the proxy overlay joins the app to. It must already exist. |
+| `PPP_BAMBUDDY_NETWORK` / `PPP_BAMBUDDY_NET_IP` | | Unraid only, and only if Bambuddy is on its own VLAN: that network's name and a free address on it for the app. See [Bambuddy on another VLAN](docs/unraid.md#bambuddy-on-another-vlan). |
 | `SMTP_URL` | | SMTP transport. **Leave unset and the app still works** — links are shown to the admin to hand over. |
 | `RESEND_API_KEY` | | Alternative to `SMTP_URL`; takes precedence. |
 | `MAIL_FROM` | | Envelope sender. |

@@ -132,7 +132,7 @@ must be a MakerWorld model page (`https://makerworld.com/.../models/<id>`);
 anything else could never be fetched, so it is refused up front. `spoolId` is
 the only thing that names a colour: it is looked up in Bambuddy's live
 inventory at that moment, must still be on the shelf (`409` if it has gone)
-and must be PLA, because the one slicer pipeline is a PLA recipe (`400`
+and must be a material the owner has switched on (PLA always; others at `/admin/materials`), because each material is sliced from its own pipeline (`400`
 otherwise). Material, colour name and hex are copied from the spool, never
 taken from the body. The requester comes from the session: an `uploaderId` or
 a `status` in the body is ignored.

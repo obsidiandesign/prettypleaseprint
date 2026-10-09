@@ -220,11 +220,20 @@ On the Bambuddy side, once:
    per model: the designer's own settings, every plate, and one filament per
    colour slot (see [Slicing and queueing](architecture.md#slicing-and-queueing)).
    So set it up the way you'd want any request sliced, with **PLA Basic** as
-   its first filament preset (every request is PLA whatever colour was
-   picked, which is why the form only offers PLA spools), and its target as
-   your printer or printer model. Pipelines made per filament count for
+   its first filament preset (this one slices PLA spools; the form offers
+   other materials only once you add a pipeline for them, below), and its
+   target as your printer or printer model. Pipelines made per filament count for
    `BAMBUDDY_PIPELINES` before this aren't needed; if that's set, its first
    id is used as the template.
+
+   **Another material (PETG).** The slicer's settings differ per filament, so
+   PETG gets its own pipeline: duplicate the first one, then change its
+   process preset, filament preset (a PETG one) and bed type to how you print
+   PETG. Put its id in `BAMBUDDY_PIPELINE_PETG` and restart, then switch PETG
+   on at **Materials** (`/admin/materials`). From then on the colour picker
+   lists PETG spools too, and a request for one is sliced and queued with that
+   pipeline, with the same ticket, tracking and waiting-for-a-person queue
+   entry as any other.
 3. **Enough memory for the slicer.** Bambuddy slices through a Bambu Studio
    sidecar, which commonly needs 1–3 GB for a multi-colour project. Short of
    memory, the slicer is killed and the ticket fails with "Slicer process

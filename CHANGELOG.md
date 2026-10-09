@@ -7,6 +7,16 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Added
 
+- **More than PLA: PETG, and a place for other materials.** The spool a
+  requester picks decides the material, and each material is sliced from its
+  own Slicer Pipeline (its own process, filament preset and bed type), so a
+  PETG request is not sliced with PLA's settings and nothing is re-sliced or
+  re-queued by hand. Set `BAMBUDDY_PIPELINE_PETG`, then switch PETG on at the
+  new **Materials** page; until then only PLA is offered, as before. Tickets
+  can change colour only within their material. Further materials are one row
+  in `src/lib/materials.ts` plus a pipeline. Migration adds
+  `app_settings.enabledMaterials`.
+
 - **Upload a file, and "Needs prep".** Besides a MakerWorld link, a request
   can be an uploaded `.stl` or `.3mf` (up to 100 MB, checked against its
   bytes, passed straight into Bambuddy's library — the app keeps no copy).
@@ -25,8 +35,9 @@ Notable changes. Every entry names a released version; deployments pin
   using the most filament; a model with more colours asks the requester to
   pick the rest on the ticket, from what is on the shelf, or leave them as
   the printer owner's choice. Colours can change until the print starts,
-  since every request is sliced as PLA and colour only matters when the
-  owner maps slots to the AMS in Bambuddy. The queue's *Ready to print* list
+  since a ticket is sliced for its material (a pick can only swap spools of
+  that material) and colour only matters when the owner maps slots to the AMS
+  in Bambuddy. The queue's *Ready to print* list
   shows that mapping. A model needing more colours than the AMS holds (4) is
   flagged. Also `PUT /api/stories/{id}/colours`, and `colours` on every
   ticket in the API. Single-colour models look exactly as before.

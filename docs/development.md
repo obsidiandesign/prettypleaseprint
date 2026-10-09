@@ -84,7 +84,7 @@ as four gates that can be required by name in branch protection:
 
 | Gate | What it does |
 | --- | --- |
-| `guard` | typecheck, and the secret scanner over every tracked file |
+| `guard` | typecheck, lint, the migrations-match-the-schema check, the configuration-docs check, and the secret scanner over every tracked file |
 | `verify` | raises the real compose stack and runs every integration suite against the built image, **including the WebAuthn ceremonies in a headless Chrome** |
 | `trivy` | filesystem scan for vulnerabilities, secrets and misconfiguration; HIGH/CRITICAL fail |
 
@@ -106,12 +106,15 @@ Two more workflows:
 
 ## The cheap gates
 
-Three checks that need no server and run in seconds, all of them in CI's
+Cheap checks that need no app server and run in seconds, all of them in CI's
 `guard` job:
 
 ```bash
 npm run typecheck                  # tsc --noEmit
 npm run check:secrets -- --all     # credential shapes across every tracked file
+npm run lint                       # ESLint, warnings count as failures
+npm run check:migrations           # migrations replay to the schema (needs SHADOW_DATABASE_URL)
+npm run check:config-docs          # env vars documented in README + examples; no stale claims
 npm run check:links                # internal markdown links and heading anchors
 ```
 

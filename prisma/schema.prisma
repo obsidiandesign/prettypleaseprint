@@ -520,6 +520,10 @@ model AppSettings {
   /// `Story.tip` values are kept, so turning it back on restores them.
   tipJarEnabled Boolean @default(false)
 
+  /// Materials besides PLA the owner has switched on (keys from
+  /// src/lib/materials.ts). PLA is always on and is not stored here.
+  enabledMaterials String[] @default([])
+
   updatedAt DateTime @updatedAt
 
   @@map("app_settings")

@@ -5,7 +5,8 @@ import { notFound } from "next/navigation";
 import { getStoryOr404, printerName, requireUser, storyRef, BOARD } from "@/lib/authz";
 import { quantityText, relativeTime } from "@/lib/catalog";
 import { isHttpUrl } from "@/lib/stories";
-import { dedupeSpools, isPla, listSpools } from "@/lib/bambuddy";
+import { dedupeSpools, listSpools } from "@/lib/bambuddy";
+import { materialOf, ticketMaterial } from "@/lib/materials";
 import { COLOUR_EDITABLE, statusLabel } from "@/lib/scope";
 import { ColourSlots, type ColourSlot } from "@/components/colour-slots";
 import { AppHeader } from "@/components/app-header";
@@ -221,7 +222,7 @@ export default async function StoryPage({
                     <ColourSlots storyId={story.id} slots={story.filaments} spools={null} from={`/story/${story.id}`} />
                   }
                 >
-                  <EditableColours storyId={story.id} slots={story.filaments} />
+                  <EditableColours storyId={story.id} slots={story.filaments} material={story.material} />
                 </Suspense>
               ) : (
                 <ColourSlots storyId={story.id} slots={story.filaments} spools={null} from={`/story/${story.id}`} />
@@ -353,9 +354,21 @@ export default async function StoryPage({
   );
 }
 
-async function EditableColours({ storyId, slots }: { storyId: number; slots: ColourSlot[] }) {
+async function EditableColours({
+  storyId,
+  slots,
+  material,
+}: {
+  storyId: number;
+  slots: ColourSlot[];
+  material: string | null;
+}) {
+  // Only the ticket's own material: it was sliced for it. A ticket with none
+  // recorded is PLA, as every one was before materials.
+  // An unrecognised material offers no spools: the API refuses those edits too.
+  const wanted = ticketMaterial(material)?.key;
   try {
-    const spools = dedupeSpools((await listSpools()).filter((s) => isPla(s.material))).map((s) => ({
+    const spools = dedupeSpools((await listSpools()).filter((s) => wanted !== undefined && materialOf(s.material)?.key === wanted)).map((s) => ({
       id: s.id,
       name: s.color_name ?? "Unnamed",
       hex: s.rgba,

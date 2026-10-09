@@ -509,7 +509,7 @@ export async function buildOpenApiDocument() {
             "live Bambuddy inventory server-side, and `material`/`color` on " +
             "the response are snapshotted from that spool at this moment, not " +
             "re-read from Bambuddy afterward.\n\n" +
-            "Resolving the link, importing it and starting the standard-PLA " +
+            "Resolving the link, importing it and starting the material-specific " +
             "pipeline all happen synchronously here — the common case is the " +
             "response already shows `status: \"Slicing\"` or even `\"Ready\"`. " +
             "A Bambuddy hiccup doesn't fail this call: the ticket is still " +
@@ -550,7 +550,7 @@ export async function buildOpenApiDocument() {
           },
           responses: {
             "201": storyResponse("Filed."),
-            "400": errorResponse("A field was missing or did not parse, the link isn't a MakerWorld model page, the spool isn't PLA, or the tip isn't an active benefit."),
+            "400": errorResponse("A field was missing or did not parse, the link isn't a MakerWorld model page, the spool's material isn't one the owner has switched on (PLA always; others at /admin/materials), or the tip isn't an active benefit."),
             "409": errorResponse("That spoolId isn't in Bambuddy's live inventory any more."),
             "503": errorResponse("Bambuddy's inventory couldn't be reached to check the spool. Retry later."),
             ...COMMON_ERRORS,
@@ -719,7 +719,7 @@ export async function buildOpenApiDocument() {
           description:
             "A spool per slot from `colours`, or `null` for the printer's " +
             "choice. Slots left out stay as they are. Spools are checked " +
-            "against Bambuddy's live inventory and must be PLA. The main slot " +
+            "against Bambuddy's live inventory and must be the ticket's own material. The main slot " +
             "(the first in `colours`) must keep a spool. The requester's, or " +
             "the printer owner's, while the ticket is Requested, Slicing or " +
             "Ready: colour doesn't affect slicing, so it can change until the " +
@@ -736,7 +736,7 @@ export async function buildOpenApiDocument() {
           },
           responses: {
             "200": storyResponse("Saved. The printer owner is told if someone else changed them."),
-            "400": errorResponse("A slot this model doesn't have, a non-PLA spool, or no spool for the main slot."),
+            "400": errorResponse("A slot this model doesn't have, a spool of another material than the ticket's, or no spool for the main slot."),
             "403": errorResponse("Not the requester or the printer owner."),
             "404": errorResponse("No such ticket, or not one you may see."),
             "409": errorResponse("The print has started (colours are settled), or a spool has gone from the shelf."),

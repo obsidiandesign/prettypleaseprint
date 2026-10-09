@@ -52,6 +52,9 @@ export type AuditAction =
   | "benefit.updated"
   | "tipjar.enabled"
   | "tipjar.disabled"
+  // filament materials beyond PLA
+  | "material.enabled"
+  | "material.disabled"
   // feature requests (the 'frr' track)
   | "feature.created"
   | "feature.status_changed"
