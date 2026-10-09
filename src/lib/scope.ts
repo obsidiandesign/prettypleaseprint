@@ -68,6 +68,45 @@ export function filamentCountFor(projectSlots: number, fallback: number): number
   return projectSlots >= 1 ? projectSlots : fallback;
 }
 
+/** One slot a project defines, from Bambuddy's `full_slots=true` filament-requirements read. */
+export type ProjectFilamentSlot = { slot_id: number; color: string | null };
+
+/** A ticket's own pick for one colour slot (a `StoryFilament` row). */
+export type FilamentPick = { slotId: number; colorHex: string | null; designColor: string | null };
+
+/** `#RRGGBB` (or `#RRGGBBAA`), or null for anything else Bambuddy sends. */
+function hexOrNull(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const hex = value.replace(/^#/, "");
+  return /^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(hex) ? `#${hex}` : null;
+}
+
+/**
+ * The `filament_colours` a slice request sends — one entry per project
+ * slot, lined up with `filament_presets` by position. Ordered by ascending
+ * `slot_id`, not `slot_id === i + 1`: a project's own slot numbering isn't
+ * guaranteed contiguous from 1 (a single-colour model's only slot has been
+ * seen numbered 3), so treating position `i` as slot id `i + 1` silently
+ * read the wrong slot — or no slot at all — for every colour after the
+ * first whenever the real ids skipped a number. The ticket's own pick wins,
+ * then the designer's colour, then Bambuddy's default (empty string) —
+ * never falling back to a *different* slot's colour, which is what made a
+ * two-colour print's second colour quietly become a copy of the first.
+ */
+export function filamentColoursFor(
+  count: number,
+  projectSlots: ProjectFilamentSlot[],
+  picks: FilamentPick[],
+): string[] {
+  const ordered = [...projectSlots].sort((a, b) => a.slot_id - b.slot_id);
+  return Array.from({ length: count }, (_, i) => {
+    const slot = ordered[i];
+    if (!slot) return "";
+    const pick = picks.find((p) => p.slotId === slot.slot_id);
+    return hexOrNull(pick?.colorHex) ?? hexOrNull(pick?.designColor) ?? hexOrNull(slot.color) ?? "";
+  });
+}
+
 /** How a ticket's print-queue entries stand, from a Bambuddy batch or each entry. */
 export type QueueCounts = {
   pending: number;

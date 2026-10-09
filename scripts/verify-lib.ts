@@ -18,6 +18,7 @@ import {
   assertFeatureTransition,
   AuthzError,
   deriveStatus,
+  filamentColoursFor,
   filamentCountFor,
   isFeatureTerminal,
   isTerminal,
@@ -97,6 +98,41 @@ check("a project with its own slot count wins over a larger fallback",
       filamentCountFor(3, 4) === 3);
 check("single-colour (1 slot) wins even over a larger fallback",
       filamentCountFor(1, 4) === 1);
+
+// ---------------------------------------------------------------------------
+section("filamentColoursFor — a second colour silently copying the first");
+// THE bug report: slot ids aren't guaranteed contiguous from 1 (a
+// single-colour model's only slot has been seen numbered 3) — treating
+// position i as slot id i+1 read the wrong slot for every colour after
+// the first whenever the real ids skipped a number, and Bambuddy's slicer
+// filled the resulting blank with slot 1's own colour instead of leaving
+// it unset.
+const nonContiguousSlots = [
+  { slot_id: 1, color: "#0000FF" }, // the designer's blue, main
+  { slot_id: 3, color: "#FFFFFF" }, // the designer's white, secondary — note: not slot 2
+];
+const bluePick = [{ slotId: 1, colorHex: "#2244CC", designColor: null }];
+check("with no pick for the secondary slot, its own designer colour is used — not slot 1's",
+      filamentColoursFor(2, nonContiguousSlots, bluePick).join(",") === "#2244CC,#FFFFFF",
+      filamentColoursFor(2, nonContiguousSlots, bluePick).join(","));
+
+const bothPicked = [
+  { slotId: 1, colorHex: "#2244CC", designColor: null },
+  { slotId: 3, colorHex: "#EEEEEE", designColor: null },
+];
+check("and once the requester picks the secondary colour too, that wins outright",
+      filamentColoursFor(2, nonContiguousSlots, bothPicked).join(",") === "#2244CC,#EEEEEE");
+
+check("contiguous slot ids (the common case) still work the same as before",
+      filamentColoursFor(
+        2,
+        [{ slot_id: 1, color: "#0000FF" }, { slot_id: 2, color: "#FFFFFF" }],
+        [{ slotId: 1, colorHex: "#2244CC", designColor: null }, { slotId: 2, colorHex: "#EEEEEE", designColor: null }],
+      ).join(",") === "#2244CC,#EEEEEE");
+
+check("a slot Bambuddy never reported at all gets Bambuddy's own default, not a thrown error",
+      filamentColoursFor(3, nonContiguousSlots, bothPicked).join(",") === "#2244CC,#EEEEEE,",
+      filamentColoursFor(3, nonContiguousSlots, bothPicked).join(","));
 
 // ---------------------------------------------------------------------------
 section("queueOutcome — the Declined/Failed split that shipped wrong once");

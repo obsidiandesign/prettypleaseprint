@@ -7,6 +7,7 @@ import { notify, printerOwner } from "@/lib/authz";
 import {
   AMS_SLOTS,
   deriveStatus,
+  filamentColoursFor,
   filamentCountFor,
   isTerminal,
   queueOutcome,
@@ -271,11 +272,6 @@ async function loadTemplate(): Promise<SlicerPipeline> {
   }
 }
 
-/** `#RRGGBB(AA)` for the slicer, from a spool's `RRGGBBAA` or a designer's `#RRGGBB`. */
-function hashHex(value: string | null | undefined): string {
-  return hexOrNull(value ?? null) ?? "";
-}
-
 /**
  * Everything one slice of a library file needs, from the template and the
  * file itself. The same plan is rebuilt for a re-slice, so it reads the
@@ -313,12 +309,7 @@ async function planSlice(
   ]);
 
   const count = filamentCountFor(slots?.projectSlots ?? 0, template.filament_presets.length);
-  const colours = Array.from({ length: count }, (_, i) => {
-    const slotId = i + 1;
-    const pick = picks.find((p) => p.slotId === slotId);
-    const designed = slots?.all.find((f) => f.slot_id === slotId)?.color;
-    return hashHex(pick?.colorHex) || hashHex(pick?.designColor) || hashHex(designed);
-  });
+  const colours = filamentColoursFor(count, slots?.all ?? [], picks);
 
   const indices = (plates?.plates ?? []).map((p) => p.index).filter((n) => Number.isInteger(n) && n > 0);
   const offered = plates?.design_overrides ?? [];
