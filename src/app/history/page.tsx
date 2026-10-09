@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { requireUser, printerName } from "@/lib/authz";
+import { requireUser } from "@/lib/authz";
 import { storyRef } from "@/lib/scope";
 import { HISTORY_STATUSES, listHistory } from "@/lib/stories";
 import { relativeTime } from "@/lib/catalog";
@@ -44,7 +44,6 @@ export default async function HistoryPage({
     searchParams,
     requireUser("/history"),
   ]);
-  const owner = await printerName();
   const isAdmin = user.role === "admin";
 
   // Only honour values we recognise; anything else falls back to "all".

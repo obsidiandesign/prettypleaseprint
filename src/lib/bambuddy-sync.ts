@@ -478,7 +478,6 @@ async function queueProgress(story: { queueBatchId: number | null; queueItemIds:
 const INTAKE_SLICE_POLLS = 7;
 const INTAKE_SLICE_POLL_MS = 3000;
 
-const RUN_SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "partial_failure", "cancelled"]);
 
 /** What intake and prep read about a story. */
 const INTAKE_FIELDS = {

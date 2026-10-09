@@ -738,7 +738,6 @@ async function main() {
   probe("A07-nextparam", "no navigable target points off-site", !navigable,
         "an href/action/redirect referenced the attacker origin");
 
-  const { default: _ } = { default: null };
   const protoRel = await anon.raw(`${APP}/signin?next=//evil.example`);
   probe("A07-protorel", "a protocol-relative ?next is not honoured",
         !(protoRel.headers.get("location") ?? "").includes("evil.example"),

@@ -1,4 +1,3 @@
-import Link from "next/link";
 import type { Invite } from "@prisma/client";
 
 import { db } from "@/lib/db";
@@ -6,7 +5,7 @@ import { requireAdmin } from "@/lib/authz";
 import { INVITE_TTL_DAYS } from "@/lib/invites";
 import { RESET_TTL_MINUTES } from "@/lib/password-reset";
 import { AppHeader } from "@/components/app-header";
-import { Kicker, StatusChip } from "@/components/ui";
+import { Kicker } from "@/components/ui";
 import { InviteForm } from "./invite-form";
 import { ResetPassword } from "@/components/reset-password";
 import { MemberAccess } from "@/components/member-access";

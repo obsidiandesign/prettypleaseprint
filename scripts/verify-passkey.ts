@@ -36,7 +36,8 @@ let passed = 0;
 const failures: string[] = [];
 function check(name: string, ok: boolean, detail = "") {
   console.info(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok || !detail ? "" : `\n          ${detail}`}`);
-  ok ? passed++ : failures.push(name);
+  if (ok) passed++;
+  else failures.push(name);
 }
 
 /**

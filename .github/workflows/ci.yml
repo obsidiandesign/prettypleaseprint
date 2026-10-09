@@ -38,6 +38,23 @@ permissions:
 jobs:
   guard:
     runs-on: ubuntu-latest
+    # A bare Postgres for the migration check only: it needs an empty scratch
+    # database to replay migrations onto, not the application stack, so the
+    # compose-based `verify` job below is not the place for it.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ppp
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: ppp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ppp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -49,6 +66,22 @@ jobs:
         run: npx prisma generate
       - name: Typecheck
         run: npx tsc --noEmit
+      # ESLint with warnings counted as failures, so the baseline stays at zero
+      # and a new warning is a decision rather than noise nobody reads.
+      - name: Lint
+        run: npm run lint
+      # Replays every migration onto an empty database and diffs the result
+      # against schema.prisma. A schema edit with no migration, or a hand-written
+      # migration that differs from the schema, passes typecheck and every
+      # suite below (they build the database from the migrations, never compare
+      # it to the schema) and then fails on the NAS.
+      - name: Migrations match the schema
+        env:
+          DATABASE_URL: postgresql://ppp:ci-only-not-a-secret@localhost:5432/ppp
+          SHADOW_DATABASE_URL: postgresql://ppp:ci-only-not-a-secret@localhost:5432/ppp_shadow
+        run: |
+          PGPASSWORD=ci-only-not-a-secret psql -h localhost -U ppp -d ppp -c 'CREATE DATABASE ppp_shadow'
+          npm run check:migrations
       # Pure-function checks — no database, no Bambuddy, no server. Cheap
       # enough to run before any of that exists.
       - name: Pure-function checks (scope, dedup, model-file validation)

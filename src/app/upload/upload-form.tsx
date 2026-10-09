@@ -26,13 +26,11 @@ function Segmented<T extends string | number>({
   options,
   value,
   onChange,
-  mono = false,
   label,
 }: {
   options: readonly T[];
   value: T;
   onChange: (v: T) => void;
-  mono?: boolean;
   label: string;
 }) {
   return (
@@ -206,7 +204,6 @@ export function UploadForm({
         <Label htmlFor="quantity-other">How many do you need?</Label>
         <Segmented
           label="Quantity"
-          mono
           options={QUANTITY_PRESETS}
           value={QUANTITY_PRESETS.includes(quantity as never) ? quantity : 0}
           onChange={setQuantity}
