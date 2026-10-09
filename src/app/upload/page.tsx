@@ -76,13 +76,13 @@ async function ShelfAndForm({
   let inventoryError = false;
   try {
     const printable = new Set((await printableMaterials()).map((m) => m.key));
-    // Baseline material first: the form preselects the first spool.
-    spools = dedupeSpools(
-      (await listSpools())
-        .map((s) => ({ s, rank: MATERIALS.findIndex((m) => m.key === materialOf(s.material)?.key) }))
-        .filter(({ rank }) => rank >= 0 && printable.has(MATERIALS[rank]!.key))
-        .sort((a, b) => a.rank - b.rank)
-        .map(({ s }) => s),
+    // Baseline material first, colours alphabetical within each material (the
+    // sort is stable, and dedupeSpools has already ordered the colours): the
+    // form preselects the first spool, and that should be PLA, not whichever
+    // material sorts first by name.
+    const rank = (spoolMaterial: string) => MATERIALS.findIndex((m) => m.key === materialOf(spoolMaterial)?.key);
+    spools = dedupeSpools((await listSpools()).filter((s) => printable.has(materialOf(s.material)?.key ?? ""))).sort(
+      (a, b) => rank(a.material) - rank(b.material),
     );
   } catch {
     inventoryError = true;
