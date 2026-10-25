@@ -427,6 +427,17 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Fixed
 
+- **Security updates: Next.js 15.5.28, zod 4.6.7, nodemailer 10.2.1.**
+  Closes a critical Next.js advisory (remote code execution through the image
+  optimizer with SVGs, plus a Server Actions denial of service), a zod
+  out-of-memory on oversized collections, and nodemailer address-parsing bugs
+  that could change who a message reaches. Better Auth goes to 1.7.13, React
+  to 19.3.1, and Resend gets a minor bump. Better Auth 1.7.3 took back the
+  `account.issuer` column that 1.7.0–1.7.2 required and no longer writes it,
+  so migration `20261025120000_account_issuer_optional` makes it nullable and
+  restores the `(providerId, accountId)` unique index. Without it, registering
+  fails.
+
 - **Image builds no longer depend on Google Fonts.** `next/font/google`
   downloaded the four faces at every build, and Google sometimes answered
   GitHub's runners with something that wasn't font CSS, failing the release
