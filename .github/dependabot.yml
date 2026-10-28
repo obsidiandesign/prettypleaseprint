@@ -25,8 +25,8 @@ updates:
         update-types: [version-update:semver-major]
       - dependency-name: "@prisma/client"
         update-types: [version-update:semver-major]
-      # @types/node majors track the Node runtime major. This app runs Node 22
-      # (Dockerfile and ci.yml), so the types stay on 22 — types ahead of the
+      # @types/node majors track the Node runtime major. This app runs Node 24
+      # (Dockerfile and ci.yml), so the types stay on 24 — types ahead of the
       # runtime describe APIs that typecheck clean and then throw. Bump only
       # together with the Node version in both places.
       - dependency-name: "@types/node"

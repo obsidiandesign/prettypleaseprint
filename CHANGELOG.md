@@ -427,6 +427,13 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Fixed
 
+- **Images run Node 24.** Node 22 has been maintenance-only since October
+  2025 and stops getting security fixes on 2027-04-30. Node 24 is supported
+  until 2028-04-30. The Dockerfile, CI and `@types/node` (24.19.2) move
+  together. Images are built from the floating `node:24-alpine` tag, so they
+  start on 24.22.1, which includes the 2026-10-21 security release. No app
+  changes. Also: Better Auth 1.7.14, Resend 6.35.0.
+
 - **Security updates: Next.js 15.5.28, zod 4.6.7, nodemailer 10.2.1.**
   Closes a critical Next.js advisory (remote code execution through the image
   optimizer with SVGs, plus a Server Actions denial of service), a zod

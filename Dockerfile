@@ -11,7 +11,7 @@
 # devDependencies just to apply a migration at boot.
 
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 
 # Prisma's query engine is a native binary: it needs OpenSSL, and glibc shims
@@ -22,7 +22,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache openssl libc6-compat
 
@@ -48,7 +48,7 @@ RUN npm run build
 # Built from scratch rather than FROM builder: it needs the Prisma CLI and the
 # seed, not the compiled app or the test toolchain. Inheriting the build stage
 # would ship well over a gigabyte to apply one migration.
-FROM node:22-alpine AS migrator
+FROM node:24-alpine AS migrator
 WORKDIR /app
 RUN apk add --no-cache openssl libc6-compat
 
@@ -94,7 +94,7 @@ ENV NODE_ENV=production
 CMD ["sh", "-c", "./node_modules/.bin/prisma migrate deploy && ./node_modules/.bin/tsx prisma/seed.ts"]
 
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 
 RUN apk add --no-cache openssl libc6-compat
