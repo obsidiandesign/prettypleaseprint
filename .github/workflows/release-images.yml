@@ -85,6 +85,7 @@ jobs:
             list="$list"$'\n'"$image:latest"
           fi
           echo "short=$short" >> "$GITHUB_OUTPUT"
+          echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           {
             echo "list<<TAGS"
             echo "$list"
@@ -100,6 +101,12 @@ jobs:
           target: ${{ matrix.target }}
           push: true
           tags: ${{ steps.tags.outputs.list }}
+          # Stamps the app image with its own commit, for the admin System
+          # page's "newer build available" check. The migrator ignores them.
+          build-args: |
+            PPP_BUILD_SHA=${{ github.sha }}
+            PPP_BUILD_DATE=${{ steps.tags.outputs.built }}
+            PPP_BUILD_REPO=${{ github.repository }}
           # No registry cache on the base layers: an `apk upgrade` has to
           # really re-run, or a CVE fixed upstream shows up as a stale replay.
           provenance: true

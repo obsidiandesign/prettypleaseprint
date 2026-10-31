@@ -72,6 +72,11 @@ that: there is no multi-tenancy, no billing, and no queue theory.
   and history. Reversible, and audited.
 - **An audit trail** of everything that changes who can get in or what happens
   to someone's request, readable at `/admin/audit`, never edited or deleted.
+  Fifty rows a page, with Models narrowed to Created, Printing or Done.
+- **Which build is running** — `/admin/system` shows the image's commit, Node,
+  PostgreSQL and the pinned package versions, and says when a newer release
+  has been published from `main` to set `PPP_TAG` to (checked at most once an
+  hour).
 - **Ask for features, triaged like the backlog** — a parallel "frr" board at
   `/frr` where anyone files a feature request (title, priority, category) and
   the owner moves it through the same stages, conversation, notifications and
