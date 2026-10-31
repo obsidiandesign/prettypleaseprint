@@ -44,6 +44,9 @@ const INTERNAL: Record<string, { reason: string; documentedIn?: string }> = {
   NEXT_PUBLIC_APP_URL: {
     reason: "inlined into browser code at build time; the published image leaves it unset and the browser uses the page's own origin",
   },
+  PPP_BUILD_SHA: { reason: "stamped into the image by the release workflow (a Dockerfile build arg), not set by hand" },
+  PPP_BUILD_DATE: { reason: "stamped into the image by the release workflow (a Dockerfile build arg), not set by hand" },
+  PPP_BUILD_REPO: { reason: "stamped into the image by the release workflow (a Dockerfile build arg), not set by hand" },
   BAMBUDDY_PIPELINES: {
     reason: "legacy fallback for BAMBUDDY_PIPELINE_ID, from before direct slicing",
     documentedIn: "docs/deployment.md",

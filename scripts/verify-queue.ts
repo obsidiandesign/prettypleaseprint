@@ -10,6 +10,7 @@ import "./_env";
  *
  * DESTRUCTIVE: wipes users and stories. Development database only.
  */
+import { readFileSync } from "node:fs";
 import { db } from "../src/lib/db";
 import { clientIpFrom, ipSource } from "../src/lib/client-ip";
 import { BOARD, isTerminal, storyRef as storyRefOf } from "../src/lib/scope";
@@ -639,6 +640,74 @@ async function main() {
   const tpuOnly = rendered(await (await client.go(`${APP}/history?material=TPU`)).text());
   check("a material filter that matches nothing empties the list",
         !tpuOnly.includes(storyRefOf(hDone.id)));
+
+  // ------------------------------------------------------------------
+  section("the audit log pages, and Models filters by step");
+  // Sixty moves onto the printer, three off it and one arrival, all dated
+  // after everything above so they are the newest rows on every view.
+  const soon = Date.now() + 60_000;
+  const pg = (i: number) => `AUDITPG-${String(i).padStart(2, "0")}`;
+  await db.auditEvent.createMany({
+    data: [
+      ...Array.from({ length: 60 }, (_, i) => ({
+        action: "story.status_changed", subject: pg(i), at: new Date(soon + i * 1000),
+        detail: { from: "Ready", to: "Printing" },
+      })),
+      ...[0, 1, 2].map((i) => ({
+        action: "story.status_changed", subject: `AUDITDONE-${i}`, at: new Date(soon + i * 1000),
+        detail: { from: "Printing", to: "Done" },
+      })),
+      { action: "story.created", subject: "AUDITNEW-0", at: new Date(soon) },
+    ],
+  });
+  const audit = async (qs: string) =>
+    rendered(await (await ruben.go(`${APP}/admin/audit${qs}`)).text());
+  const hasRow = (html: string, subject: string) => html.includes(`>${subject}<`);
+
+  const everything = await audit("");
+  const total = await db.auditEvent.count();
+  check("the log shows fifty rows a page, and says of how many",
+        everything.includes(`Showing 1–50 of ${total}`), `expected "of ${total}"`);
+  check("with a link to the older ones", everything.includes('href="/admin/audit?page=2"'));
+
+  const printing1 = await audit("?lens=uploads&step=printing");
+  check("Printing shows the moves onto the printer, newest first",
+        hasRow(printing1, pg(59)) && hasRow(printing1, pg(10)) && !hasRow(printing1, pg(9)));
+  check("and nothing else",
+        !hasRow(printing1, "AUDITDONE-0") && !hasRow(printing1, "AUDITNEW-0"));
+  check("Printing counts only its own rows", printing1.includes("Showing 1–50 of 60"));
+  check("its pager keeps the filter",
+        printing1.includes('href="/admin/audit?lens=uploads&amp;step=printing&amp;page=2"'));
+
+  const printing2 = await audit("?lens=uploads&step=printing&page=2");
+  check("page two picks up where page one stopped",
+        hasRow(printing2, pg(9)) && hasRow(printing2, pg(0)) && !hasRow(printing2, pg(10)) &&
+        printing2.includes("Showing 51–60 of 60"));
+
+  const done = await audit("?lens=uploads&step=done");
+  check("Done shows only moves off the printer",
+        hasRow(done, "AUDITDONE-2") && hasRow(done, "AUDITDONE-0") && !hasRow(done, pg(59)));
+  const created = await audit("?lens=uploads&step=created");
+  check("Created shows only arrivals", hasRow(created, "AUDITNEW-0") && !hasRow(created, pg(59)));
+
+  check("a page past the end shows the last page",
+        (await audit("?lens=uploads&step=printing&page=999")).includes("Page 2 of 2"));
+  check("an unreadable page number is page one",
+        (await audit("?lens=uploads&step=printing&page=abc")).includes("Showing 1–50 of 60"));
+  check("a step outside Models is ignored",
+        (await audit("?step=done")).includes(`of ${total}`));
+
+  // ------------------------------------------------------------------
+  section("the System page");
+  const sys = await ruben.go(`${APP}/admin/system`);
+  const sysHtml = rendered(await sys.text());
+  check("the admin can open it", sys.status === 200, `status ${sys.status}`);
+  const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { dependencies: Record<string, string> };
+  check("it lists the pinned runtime packages",
+        sysHtml.includes(">next<") && sysHtml.includes(`>${pkg.dependencies.next}<`));
+  check("it says whether it could compare builds",
+        /Not stamped|Up to date|Newer build available|Couldn.{1,7}t check/.test(sysHtml));
+  check("a client gets 404", (await client.go(`${APP}/admin/system`)).status === 404);
 
   // ------------------------------------------------------------------
   section("the uploader sees what happened");

@@ -184,7 +184,7 @@ async function main() {
         isAuthenticated(realPage),
         "marker missing — every negative auth probe below is vacuous");
 
-  for (const path of ["/admin/invites", "/admin/audit"]) {
+  for (const path of ["/admin/invites", "/admin/audit", "/admin/system"]) {
     const r = await client.go(APP + path);
     probe(`A01-page ${path}`, `${path} refuses a client with 404`,
           r.status === 404, `expected 404, got ${r.status}`);

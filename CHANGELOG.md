@@ -7,6 +7,21 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Added
 
+- **The audit log pages, and Models has steps.** Fifty rows a page with
+  Newer/Older links and "51–100 of 1,284", in place of the most recent 200
+  and nothing older. Under **Models**, Created, Printing and Done narrow to a
+  ticket's arrival, its move onto the printer, and its move off. The filter
+  and page are in the URL, and the panels above still cover the whole log.
+
+- **System page (`/admin/system`).** Admin-only: the build's commit and date,
+  Node and PostgreSQL versions, and the pinned runtime packages. Release
+  images are now stamped with their commit (`PPP_BUILD_SHA`,
+  `PPP_BUILD_DATE` and `PPP_BUILD_REPO`, as build args, nothing to set). The
+  page asks GitHub at most once an hour for the newest published release on
+  `main` (the last successful Release images run, so the tag always exists),
+  and names it as the tag to set `PPP_TAG` to. A build without the stamp (local or CI)
+  says so and skips the check.
+
 - **More than PLA: PETG, and a place for other materials.** The spool a
   requester picks decides the material, and each material is sliced from its
   own Slicer Pipeline (its own process, filament preset and bed type), so a
