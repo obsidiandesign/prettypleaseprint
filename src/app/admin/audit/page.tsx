@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import type { Prisma } from "@prisma/client";
 
 import { db } from "@/lib/db";
@@ -51,6 +52,41 @@ const LENSES: Array<{ key: Lens; label: string; actions?: string[] }> = [
 ];
 
 /**
+ * Within "Models", the three moments of a ticket's life people ask about:
+ * when it arrived, when it went on the printer, and when it came off.
+ * `story.status_changed` records the stage it moved `to`, so the printing and
+ * done steps are a filter on that field rather than verbs of their own.
+ */
+type Step = "created" | "printing" | "done";
+
+const STEPS: Array<{ key: Step; label: string; where: Prisma.AuditEventWhereInput }> = [
+  { key: "created", label: "Created", where: { action: "story.created" } },
+  {
+    key: "printing",
+    label: "Printing",
+    where: { action: "story.status_changed", detail: { path: ["to"], equals: "Printing" } },
+  },
+  {
+    key: "done",
+    label: "Done",
+    where: { action: "story.status_changed", detail: { path: ["to"], equals: "Done" } },
+  },
+];
+
+/** Rows per page. The log only grows, so the page has to stop somewhere. */
+const PAGE_SIZE = 50;
+
+/** One URL per view, so a page can be linked to and the back button works. */
+function auditHref(lens: Lens, step: Step | undefined, page: number): string {
+  const q = new URLSearchParams();
+  if (lens !== "all") q.set("lens", lens);
+  if (step) q.set("step", step);
+  if (page > 1) q.set("page", String(page));
+  const qs = q.toString();
+  return qs ? `/admin/audit?${qs}` : "/admin/audit";
+}
+
+/**
  * Refusals are the rows worth noticing — a run of them from one place is the
  * shape of somebody trying things. Everything else is normal traffic.
  *
@@ -71,17 +107,32 @@ function tone(action: string): string {
 export default async function AuditPage({
   searchParams,
 }: {
-  searchParams: Promise<{ lens?: string }>;
+  searchParams: Promise<{ lens?: string; step?: string; page?: string }>;
 }) {
   const admin = await requireAdmin();
-  const { lens: raw } = await searchParams;
+  const { lens: raw, step: rawStep, page: rawPage } = await searchParams;
   const lens = (LENSES.find((l) => l.key === raw)?.key ?? "all") as Lens;
   const actions = LENSES.find((l) => l.key === lens)?.actions;
+  // Steps only exist inside "Models"; a stray `step` on another lens is ignored.
+  const step = lens === "uploads" ? STEPS.find((s) => s.key === rawStep) : undefined;
 
-  const where: Prisma.AuditEventWhereInput = actions ? { action: { in: actions } } : {};
+  const where: Prisma.AuditEventWhereInput =
+    step?.where ?? (actions ? { action: { in: actions } } : {});
+
+  const total = await db.auditEvent.count({ where });
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // Anything unparseable is page 1; past the end is the last page.
+  const page = Math.min(pages, Math.max(1, Number.parseInt(rawPage ?? "", 10) || 1));
+  const first = (page - 1) * PAGE_SIZE;
 
   const [events, refusalsToday, refusalPanel, stagePanel, mixPanel] = await Promise.all([
-    db.auditEvent.findMany({ where, orderBy: { at: "desc" }, take: 200 }),
+    db.auditEvent.findMany({
+      where,
+      // `id` breaks ties, so rows sharing a timestamp don't swap between pages.
+      orderBy: [{ at: "desc" }, { id: "desc" }],
+      skip: first,
+      take: PAGE_SIZE,
+    }),
     db.auditEvent.count({
       where: {
         action: { in: [...REFUSALS] },
@@ -123,7 +174,7 @@ export default async function AuditPage({
           {LENSES.map((l) => (
             <Link
               key={l.key}
-              href={l.key === "all" ? "/admin/audit" : `/admin/audit?lens=${l.key}`}
+              href={auditHref(l.key, undefined, 1)}
               aria-current={l.key === lens ? "page" : undefined}
               className={`stamp cursor-pointer rounded-chip border-[3px] border-ink px-[15px] py-[6px] font-mono text-[12px] font-bold uppercase tracking-[0.06em] ${
                 l.key === lens ? "bg-cherry-dk text-cream" : "bg-porcelain text-ink hover:bg-sun"
@@ -133,6 +184,23 @@ export default async function AuditPage({
             </Link>
           ))}
         </nav>
+
+        {lens === "uploads" && (
+          <nav aria-label="Models" className="mb-[17.6px] flex flex-wrap gap-[4.4px]">
+            {[{ key: undefined, label: "All models" }, ...STEPS].map((s) => (
+              <Link
+                key={s.key ?? "all"}
+                href={auditHref("uploads", s.key, 1)}
+                aria-current={s.key === step?.key ? "page" : undefined}
+                className={`cursor-pointer rounded-chip border-2 border-ink px-[12px] py-[4px] font-mono text-[11px] font-bold uppercase tracking-[0.06em] ${
+                  s.key === step?.key ? "bg-ink text-cream" : "bg-porcelain text-ink hover:bg-sun"
+                }`}
+              >
+                {s.label}
+              </Link>
+            ))}
+          </nav>
+        )}
 
         <div className="overflow-x-auto rounded-panel border-[3px] border-ink bg-porcelain shadow-stamp">
           <table className="w-full min-w-[46rem] border-collapse">
@@ -188,12 +256,50 @@ export default async function AuditPage({
           </table>
         </div>
 
-        <p className="m-0 mt-[13.2px] font-mono text-[11.5px] uppercase text-ink-3">
-          Showing the most recent {events.length}
-          {events.length === 200 ? " of more" : ""}.
-        </p>
+        <div className="mt-[13.2px] flex flex-wrap items-center justify-between gap-[13.2px]">
+          <p className="m-0 font-mono text-[11.5px] uppercase text-ink-3">
+            {total === 0
+              ? "No rows."
+              : `Showing ${first + 1}–${first + events.length} of ${total}, newest first.`}
+          </p>
+          {pages > 1 && (
+            <nav aria-label="Pages" className="flex items-center gap-[8.8px]">
+              <PageLink href={page > 1 ? auditHref(lens, step?.key, page - 1) : null} rel="prev">
+                ← Newer
+              </PageLink>
+              <span className="font-mono text-[11.5px] uppercase text-ink-3">
+                Page {page} of {pages}
+              </span>
+              <PageLink href={page < pages ? auditHref(lens, step?.key, page + 1) : null} rel="next">
+                Older →
+              </PageLink>
+            </nav>
+          )}
+        </div>
       </main>
     </>
+  );
+}
+
+/** A pager button, or a dimmed label at either end. */
+function PageLink({
+  href,
+  rel,
+  children,
+}: {
+  href: string | null;
+  rel: "prev" | "next";
+  children: ReactNode;
+}) {
+  const base =
+    "rounded-chip border-2 border-ink px-[12px] py-[4px] font-mono text-[11px] font-bold uppercase tracking-[0.06em]";
+  if (!href) {
+    return <span aria-disabled="true" className={`${base} bg-cream-2 text-ink-3 opacity-60`}>{children}</span>;
+  }
+  return (
+    <Link href={href} rel={rel} className={`${base} cursor-pointer bg-porcelain text-ink hover:bg-sun`}>
+      {children}
+    </Link>
   );
 }
 

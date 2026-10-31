@@ -124,6 +124,16 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modul
 # ci.yml pins this: "images ship no npm".
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
+# Which build this is, for the admin System page. The release workflow passes
+# these; a local or CI build leaves them empty and the page says so. Kept
+# last so a new commit only changes this layer.
+ARG PPP_BUILD_SHA=""
+ARG PPP_BUILD_DATE=""
+ARG PPP_BUILD_REPO=""
+ENV PPP_BUILD_SHA=$PPP_BUILD_SHA \
+    PPP_BUILD_DATE=$PPP_BUILD_DATE \
+    PPP_BUILD_REPO=$PPP_BUILD_REPO
+
 USER nextjs
 EXPOSE 3000
 
